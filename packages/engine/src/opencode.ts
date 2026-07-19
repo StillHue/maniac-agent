@@ -25,12 +25,22 @@ interface ProviderConfig {
 
 let activeProvider: ProviderConfig = {
   provider: 'opencode',
-  model: 'big-pickle',
+  model: 'grok-build-0.1',
   temperature: 0.3,
   maxTokens: 4096,
 };
 
 const providerHistory: { task: string; provider: string; success: boolean }[] = [];
+
+/** True only for explicit tool protocols — not bare shell markdown fences. */
+function hasExplicitToolProtocol(text: string): boolean {
+  return (
+    /\[TOOL:[\w\/]+\]/i.test(text) ||
+    /<tool_call>/i.test(text) ||
+    /```tool_call\b/i.test(text) ||
+    /\{\s*"name"\s*:\s*"[\w\/]+"\s*,\s*"(?:parameters|arguments)"\s*:/i.test(text)
+  );
+}
 
 export function getActiveProvider(): ProviderConfig {
   return { ...activeProvider };
@@ -71,13 +81,21 @@ async function callOpenAICompat(
 
   if (!isStream || !res.body) {
     const data = await res.json();
-    return data.choices?.[0]?.message?.content?.trim() || '';
+    const msg = data.choices?.[0]?.message || {};
+    const content = typeof msg.content === 'string' ? msg.content.trim() : '';
+    const reasoning =
+      typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : '';
+    // Grok may put [TOOL:…] only in reasoning_content. Promote reasoning only
+    // when it has an explicit tool protocol — never raw CoT / example fences.
+    return content || (hasExplicitToolProtocol(reasoning) ? reasoning : '');
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let reasoningText = '';
+  const { stripThinking } = require('./tools') as typeof import('./tools');
 
   while (true) {
     const { done, value } = await reader.read();
@@ -92,12 +110,35 @@ async function callOpenAICompat(
       if (data === '[DONE]') continue;
       try {
         const parsed = JSON.parse(data);
-        const token = parsed.choices?.[0]?.delta?.content || '';
-        if (token) { fullText += token; onEvent!({ type: 'token', content: token }); }
+        const delta = parsed.choices?.[0]?.delta || {};
+        const reason =
+          (typeof delta.reasoning_content === 'string' && delta.reasoning_content) ||
+          (typeof delta.reasoning === 'string' && delta.reasoning) ||
+          '';
+        if (reason) {
+          reasoningText += reason;
+          if (onEvent) onEvent({ type: 'reasoning', content: reason });
+        }
+        const token = typeof delta.content === 'string' ? delta.content : '';
+        if (token) {
+          fullText += token;
+          // Emit only the user-visible delta — CoT stays off the transcript
+          const visible = stripThinking(fullText);
+          const prevVisible = stripThinking(fullText.slice(0, fullText.length - token.length));
+          const visibleDelta = visible.startsWith(prevVisible)
+            ? visible.slice(prevVisible.length)
+            : visible;
+          if (visibleDelta) onEvent!({ type: 'token', content: visibleDelta });
+        }
       } catch {}
     }
   }
-  return fullText.trim();
+
+  // Prefer visible content. Promote reasoning only when it carries an explicit
+  // tool protocol — never dump raw CoT (with example fences) into parseToolCalls.
+  const content = fullText.trim();
+  const reasoning = reasoningText.trim();
+  return content || (hasExplicitToolProtocol(reasoning) ? reasoning : '');
 }
 
 // ─── Gemini call ─────────────────────────────────────────────────────────────
@@ -187,6 +228,7 @@ function resolveSlots(overrides?: AutoRouterSlot[]): AutoRouterSlot[] {
     apiKey: s.apiKey
       || (s.provider === 'nvidia'   ? process.env.NVIDIA_API_KEY   : '')
       || (s.provider === 'opencode' ? process.env.OPENCODE_API_KEY : '')
+      || (s.provider === 'xai'      ? process.env.XAI_API_KEY      : '')
       || '',
   }));
 }

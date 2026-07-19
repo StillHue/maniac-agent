@@ -45,6 +45,7 @@ export type StreamEvent =
   | { type: 'tool_output'; tool: string; chunk: string }
   | { type: 'tool_result'; tool: string; success: boolean; output: string }
   | { type: 'subagent_start'; id: string; goal: string }
+  | { type: 'subagents_dispatch'; count: number }
   | { type: 'subagent_token'; id: string; content: string }
   | { type: 'subagent_tool'; id: string; tool: string; done: boolean; success?: boolean }
   | { type: 'subagent_done'; id: string; success: boolean; summary: string }

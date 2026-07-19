@@ -177,7 +177,7 @@ export const PROVIDER_DEFS: ProviderDef[] = [
   },
   {
     id: 'auto',
-    name: 'Auto (OpenCode Zen free → NVIDIA)',
+    name: 'Auto (Grok Build → Zen free → NVIDIA)',
     baseUrl: '',
     modelsEndpoint: '',
     chatEndpoint: '',
@@ -189,49 +189,68 @@ export const PROVIDER_DEFS: ProviderDef[] = [
 
 const CONFIG_PATH = path.join(os.homedir(), '.maniac', 'config.json');
 
-/** Default auto-router slots — OpenCode Zen free models primary, NVIDIA NIM last fallback */
+/**
+ * Default auto-router slots.
+ * Grok Build (via OpenCode Zen) first — best at tool-calling / not dumping
+ * scripts as markdown. Then other Zen free models, NVIDIA NIM last.
+ * @see https://github.com/xai-org/grok-build
+ */
 export const AUTO_SLOTS: AutoRouterSlot[] = [
   {
     provider: 'opencode',
-    model: 'big-pickle',
+    model: 'grok-build-0.1',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
     priority: 100,
   },
   {
     provider: 'opencode',
-    model: 'deepseek-v4-flash-free',
+    model: 'grok-4.5',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
     priority: 95,
   },
   {
     provider: 'opencode',
+    model: 'big-pickle',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 80,
+  },
+  {
+    provider: 'opencode',
+    model: 'deepseek-v4-flash-free',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 75,
+  },
+  {
+    provider: 'opencode',
     model: 'nemotron-3-ultra-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 90,
+    priority: 70,
   },
   {
     provider: 'opencode',
     model: 'mimo-v2.5-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 85,
+    priority: 65,
   },
   {
     provider: 'opencode',
     model: 'north-mini-code-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 80,
+    priority: 60,
   },
   {
     provider: 'nvidia',
     model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
     apiKey: process.env.NVIDIA_API_KEY || '',
     baseUrl: 'https://integrate.api.nvidia.com/v1',
-    priority: 50,
+    priority: 40,
   },
 ];
 

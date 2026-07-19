@@ -31,7 +31,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   xai: 'grok-2-latest',
   together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
   nvidia: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  opencode: 'big-pickle',
+  opencode: 'grok-build-0.1',
   ollama: 'llama3.2',
   auto: 'auto',
   hermes: 'hermes',
