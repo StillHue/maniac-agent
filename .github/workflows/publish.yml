@@ -50,10 +50,16 @@ jobs:
       - name: Ensure modern npm (OIDC trusted publish)
         run: npm install -g npm@latest
 
+      # Publish from /tmp so yarn workspaces root (private:true) is not used.
       - name: Publish to npm
-        working-directory: dist-npm
-        run: npm publish --access public
+        run: |
+          set -e
+          PACK="$(pwd)/dist-npm"
+          STAGE="/tmp/maniac-agent-npm"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp "$PACK/maniac.js" "$PACK/package.json" "$PACK/README.md" "$PACK/LICENSE" "$STAGE/"
+          cd "$STAGE"
+          npm publish --access public
         env:
-          # Fallback only — Automation tokens that bypass 2FA are restricted for publish.
-          # Prefer Trusted Publisher (OIDC); NODE_AUTH_TOKEN optional after that.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
