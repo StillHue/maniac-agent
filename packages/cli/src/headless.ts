@@ -14,6 +14,8 @@ export interface HeadlessOptions {
   /** When true, auto-approve all permission asks (like --yolo / bypass). */
   yolo?: boolean;
   cwd?: string;
+  /** Image paths routed through the Groq vision model before the code model runs. */
+  images?: string[];
 }
 
 /** Project StreamEvent → compact NDJSON lines for scripting/CI. */
@@ -70,6 +72,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<string> {
     message: opts.prompt,
     mode: opts.mode || 'chat',
     history: opts.history,
+    images: opts.images,
     repoPath: opts.cwd || process.cwd(),
     permissionMode,
     sessionId: opts.sessionId,
@@ -91,6 +94,9 @@ export function parseCliArgs(argv: string[]): {
   resume?: string;
   continueLatest: boolean;
   help: boolean;
+  images: string[];
+  telegram: boolean;
+  noAutoResume: boolean;
 } {
   const args = argv.slice(2);
   let headless = false;
@@ -99,6 +105,9 @@ export function parseCliArgs(argv: string[]): {
   let resume: string | undefined;
   let continueLatest = false;
   let help = false;
+  let telegram = false;
+  let noAutoResume = false;
+  const images: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -111,6 +120,13 @@ export function parseCliArgs(argv: string[]): {
       resume = args[++i] || '';
     } else if (a === '-c' || a === '--continue') {
       continueLatest = true;
+    } else if (a === '-i' || a === '--image') {
+      const p = args[++i];
+      if (p) images.push(p);
+    } else if (a === 'telegram' || a === '--telegram') {
+      telegram = true;
+    } else if (a === '--no-auto-resume') {
+      noAutoResume = true;
     } else if (a === '-h' || a === '--help') {
       help = true;
     } else if (!a.startsWith('-') && !prompt) {
@@ -118,5 +134,5 @@ export function parseCliArgs(argv: string[]): {
     }
   }
 
-  return { headless, prompt, yolo, resume, continueLatest, help };
+  return { headless, prompt, yolo, resume, continueLatest, help, images, telegram, noAutoResume };
 }

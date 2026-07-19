@@ -18,6 +18,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'resume', args: '[id]', description: 'list or resume a saved session' },
   { name: 'continue', description: 'resume most recent session for this cwd' },
   { name: 'history', description: 'show session messages' },
+  { name: 'proposals', description: 'list pending improvement proposals' },
+  { name: 'approve', args: '<id>', description: 'apply an improvement proposal' },
+  { name: 'reject', args: '<id>', description: 'reject an improvement proposal' },
   { name: 'help', description: 'show this help' },
   { name: 'exit', description: 'quit maniac' },
 ];

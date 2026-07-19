@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Box, Static, useInput, useApp, type Key } from 'ink';
+import { Box, Static, Text, useInput, useApp, type Key } from 'ink';
 import {
   defaultHarness,
   loadManiacConfig,
@@ -13,6 +13,9 @@ import {
   compressMessages,
   CONTEXT_LIMIT,
   globalPromptQueue,
+  listProposals,
+  applyProposal,
+  updateProposalStatus,
   type PermissionMode,
   type PermissionPromptDecision,
 } from '@maniac/engine';
@@ -30,7 +33,16 @@ import {
   type CliConfig,
   type GitInfo,
 } from './cli-config.js';
+import { visionAvailable } from '@maniac/engine';
+import {
+  captureClipboardImage,
+  resolveMessageImages,
+  type ImageAttachment,
+} from './attachments.js';
+import { Banner } from './components/Banner.js';
 import { MessageItem } from './components/MessageItem.js';
+import { renderMarkdown } from './markdown.js';
+import { ACCENT } from './theme.js';
 import { LiveArea } from './components/LiveArea.js';
 import { Footer } from './components/Footer.js';
 import { ModelWizard } from './components/ModelWizard.js';
@@ -45,7 +57,9 @@ import type {
 } from './ui-types.js';
 import { PERMISSION_OPTIONS } from './ui-types.js';
 
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+// Claude-style organic pulse: the asterisk "blooms" and shrinks
+// (ping-pong) instead of spinning like braille dots.
+const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
 
 const MANIAC_THINKING = [
   'It makes sense?',
@@ -112,7 +126,12 @@ export function App({
     cfgRef.current = cfg;
   }, [cfg]);
 
-  const [staticItems, setStaticItems] = useState<StaticItem[]>([{ type: 'banner' }]);
+  const [staticItems, setStaticItems] = useState<StaticItem[]>([]);
+  // Welcome banner lives outside <Static> (Static output is permanent),
+  // so it can be dismissed on the first user message to keep the UI clean.
+  const [showBanner, setShowBanner] = useState<boolean>(
+    !(initialMessages && initialMessages.length > 0),
+  );
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>(initialMessages || []);
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId);
   const [queueSize, setQueueSize] = useState(0);
@@ -122,6 +141,10 @@ export function App({
   useEffect(() => {
     inputRef.current = input;
   }, [input]);
+
+  // Image attachments referenced in the input as [imageN] (pasted via Ctrl+V)
+  const attachmentsRef = useRef<ImageAttachment[]>([]);
+  const imageCounter = useRef(0);
 
   const [cursorVisible, setCursorVisible] = useState(true);
   useEffect(() => {
@@ -144,7 +167,8 @@ export function App({
   }, [input]);
 
   const [isLoading, setIsLoading] = useState(false);
-  const [reasoningText, setReasoningText] = useState('');
+  // Streaming response shown once, directly in the chat area (not the footer).
+  const [liveText, setLiveText] = useState('');
   const [streamTools, setStreamTools] = useState<ToolCallView[]>([]);
   const [streamSubagents, setStreamSubagents] = useState<SubagentStatus[]>([]);
   const abortRef = useRef<{ aborted: boolean }>({ aborted: false });
@@ -154,15 +178,33 @@ export function App({
   const permResolveRef = useRef<((d: PermissionPromptDecision) => void) | null>(null);
 
   const [spinnerFrame, setSpinnerFrame] = useState(SPINNER_FRAMES[0]);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const spinnerIdx = useRef(0);
+  const runStartRef = useRef(0);
   useEffect(() => {
     if (!isLoading) return;
+    runStartRef.current = Date.now();
+    setElapsedSec(0);
     const t = setInterval(() => {
       spinnerIdx.current = (spinnerIdx.current + 1) % SPINNER_FRAMES.length;
       setSpinnerFrame(SPINNER_FRAMES[spinnerIdx.current]);
-    }, 80);
+      setElapsedSec(Math.floor((Date.now() - runStartRef.current) / 1000));
+    }, 120);
     return () => clearInterval(t);
   }, [isLoading]);
+
+  const [termSize, setTermSize] = useState(() => ({
+    cols: process.stdout.columns || 120,
+    rows: process.stdout.rows || 24,
+  }));
+  useEffect(() => {
+    const onResize = () =>
+      setTermSize({ cols: process.stdout.columns || 120, rows: process.stdout.rows || 24 });
+    process.stdout.on('resize', onResize);
+    return () => {
+      process.stdout.off('resize', onResize);
+    };
+  }, []);
 
   const [git, setGit] = useState<GitInfo>(() => getGitInfo());
   useEffect(() => {
@@ -214,24 +256,30 @@ export function App({
   );
 
   const doRun = useCallback(
-    async (message: string, history: ChatMessage[], mode: string) => {
+    async (message: string, history: ChatMessage[], mode: string, images: string[] = []) => {
       const abort = { aborted: false };
       abortRef.current = abort;
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setIsLoading(true);
-      setReasoningText('');
+      setLiveText('');
       setStreamTools([]);
       setStreamSubagents([]);
 
       let fullText = '';
+      let cleanedText = '';
       const tools: ToolCallView[] = [];
       const subagents: SubagentStatus[] = [];
-      let pendingReasoning = '';
+
+      const stripToolMarkup = (text: string) =>
+        text
+          .replace(/\[TOOL:[\s\S]*$/gi, '')
+          .replace(/\[?TOOL:[\w\/]+\]\s*[\s\S]*?\s*\[\/TOOL\]/gi, '')
+          .trim();
 
       const clearLive = () => {
         setIsLoading(false);
-        setReasoningText('');
+        setLiveText('');
         setStreamTools([]);
         setStreamSubagents([]);
         setPermPrompt(null);
@@ -242,6 +290,7 @@ export function App({
           message,
           mode: mode as 'chat' | 'ask' | 'plan',
           history,
+          images,
           sessionId,
           permissionMode: cfgRef.current.permissionMode,
           signal: controller.signal,
@@ -252,24 +301,31 @@ export function App({
             switch (event.type) {
               case 'token': {
                 fullText += event.content;
-                pendingReasoning = fullText
-                  .replace(/\[TOOL:[\s\S]*$/gi, '')
-                  .replace(/\[?TOOL:[\w\/]+\]\s*[\s\S]*?\s*\[\/TOOL\]/gi, '')
-                  .trim();
-                setReasoningText(pendingReasoning);
+                cleanedText = stripToolMarkup(fullText);
+                setLiveText(cleanedText);
                 break;
               }
               case 'reasoning': {
-                if (!pendingReasoning) {
-                  pendingReasoning = event.content;
-                  setReasoningText(pendingReasoning);
+                // Non-streaming providers only emit the full text at once.
+                if (!cleanedText) {
+                  cleanedText = event.content;
+                  setLiveText(cleanedText);
                 }
                 break;
               }
               case 'tool_start': {
+                // Commit the narration that preceded this tool call to the
+                // transcript, so it's read once and never re-rendered.
+                if (cleanedText) {
+                  const narration = cleanedText;
+                  setStaticItems((prev) => [
+                    ...prev,
+                    { type: 'assistant', id: nextId(), text: narration, tools: [] },
+                  ]);
+                }
                 fullText = '';
-                pendingReasoning = '';
-                setReasoningText('');
+                cleanedText = '';
+                setLiveText('');
                 const tc: ToolCallView = { tool: event.tool, args: event.args, done: false };
                 tools.push(tc);
                 setStreamTools([...tools]);
@@ -341,8 +397,8 @@ export function App({
               }
               case 'error': {
                 fullText += `\n[error: ${event.message}]`;
-                pendingReasoning = fullText;
-                setReasoningText(fullText);
+                cleanedText = stripToolMarkup(fullText);
+                setLiveText(cleanedText);
                 break;
               }
             }
@@ -387,7 +443,11 @@ export function App({
       setStaticItems((prev) => [...prev, { type: 'user', id: nextId(), text: next.text }]);
       const hist = chatHistory;
       setChatHistory((prev) => [...prev, { role: 'user', content: next.text }]);
-      await doRun(next.text, hist, cfgRef.current.mode);
+      const queuedImages = resolveMessageImages(next.text, attachmentsRef.current);
+      attachmentsRef.current = attachmentsRef.current.filter(
+        (a) => !next.text.includes(a.placeholder),
+      );
+      await doRun(next.text, hist, cfgRef.current.mode, queuedImages);
     } finally {
       drainingRef.current = false;
       if (globalPromptQueue.size > 0) void drainQueue();
@@ -421,7 +481,8 @@ export function App({
         case 'new':
           setChatHistory([]);
           setSessionId(undefined);
-          setStaticItems([{ type: 'banner' }]);
+          setStaticItems([]);
+          setShowBanner(true);
           break;
 
         case 'compact': {
@@ -543,8 +604,8 @@ export function App({
             } else {
               setSessionId(rec.summary.id);
               setChatHistory(rec.messages);
+              setShowBanner(false);
               setStaticItems([
-                { type: 'banner' },
                 {
                   type: 'system',
                   id: nextId(),
@@ -569,8 +630,8 @@ export function App({
             if (rec) {
               setSessionId(rec.summary.id);
               setChatHistory(rec.messages);
+              setShowBanner(false);
               setStaticItems([
-                { type: 'banner' },
                 {
                   type: 'system',
                   id: nextId(),
@@ -602,6 +663,76 @@ export function App({
             ]);
           }
           break;
+
+        case 'proposals': {
+          const items = listProposals(arg === 'all' ? undefined : ('pending' as any));
+          if (!items.length) {
+            setStaticItems((prev) => [
+              ...prev,
+              { type: 'system', id: nextId(), text: 'no pending proposals', variant: 'info' },
+            ]);
+          } else {
+            const lines = items
+              .map(
+                (p) =>
+                  `  ${p.id}  [${p.status}]  ${p.kind}  score=${p.evidence.score.toFixed(2)}  ${p.title}`,
+              )
+              .join('\n');
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: `proposals:\n${lines}\n\n/approve <id>  or  /reject <id>`,
+                variant: 'info',
+              },
+            ]);
+          }
+          break;
+        }
+
+        case 'approve': {
+          if (!arg) {
+            setStaticItems((prev) => [
+              ...prev,
+              { type: 'system', id: nextId(), text: 'usage: /approve <proposal-id>', variant: 'error' },
+            ]);
+            break;
+          }
+          void applyProposal(arg, process.cwd()).then((r) => {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: r.output,
+                variant: r.success ? 'success' : 'error',
+              },
+            ]);
+          });
+          break;
+        }
+
+        case 'reject': {
+          if (!arg) {
+            setStaticItems((prev) => [
+              ...prev,
+              { type: 'system', id: nextId(), text: 'usage: /reject <proposal-id>', variant: 'error' },
+            ]);
+            break;
+          }
+          const p = updateProposalStatus(arg, 'rejected');
+          setStaticItems((prev) => [
+            ...prev,
+            {
+              type: 'system',
+              id: nextId(),
+              text: p ? `✓ rejected ${arg}` : `✗ proposal not found: ${arg}`,
+              variant: p ? 'success' : 'error',
+            },
+          ]);
+          break;
+        }
 
         default:
           setStaticItems((prev) => [
@@ -635,6 +766,7 @@ export function App({
       }
 
       setInput('');
+      setShowBanner(false);
 
       if (isLoading) {
         globalPromptQueue.enqueue(trimmed);
@@ -651,10 +783,29 @@ export function App({
         return;
       }
 
+      const images = resolveMessageImages(trimmed, attachmentsRef.current);
+      if (images.length > 0) {
+        // Consume the attachments referenced by this message
+        attachmentsRef.current = attachmentsRef.current.filter(
+          (a) => !trimmed.includes(a.placeholder),
+        );
+        if (!visionAvailable()) {
+          setStaticItems((prev) => [
+            ...prev,
+            {
+              type: 'system',
+              id: nextId(),
+              text: '! image attached but GROQ_API_KEY is not set — vision routing disabled',
+              variant: 'warn',
+            },
+          ]);
+        }
+      }
+
       setStaticItems((prev) => [...prev, { type: 'user', id: nextId(), text: trimmed }]);
       const newHistory = [...chatHistory, { role: 'user' as const, content: trimmed }];
       setChatHistory(newHistory);
-      void doRun(trimmed, chatHistory, cfgRef.current.mode);
+      void doRun(trimmed, chatHistory, cfgRef.current.mode, images);
     },
     [chatHistory, handleSlash, doRun, isLoading],
   );
@@ -696,7 +847,7 @@ export function App({
       abortRef.current.aborted = true;
       abortControllerRef.current?.abort();
       setIsLoading(false);
-      setReasoningText('');
+      setLiveText('');
       setStreamTools([]);
       setStreamSubagents([]);
       if (permResolveRef.current) {
@@ -738,6 +889,28 @@ export function App({
         ...prev,
         { type: 'system', id: nextId(), text: `mode → ${next}`, variant: 'info' },
       ]);
+      return;
+    }
+
+    // Ctrl+V → attach image from clipboard as [imageN]
+    if (key.ctrl && inputChar === 'v') {
+      const img = captureClipboardImage();
+      if (img) {
+        imageCounter.current += 1;
+        const placeholder = `[image${imageCounter.current}]`;
+        attachmentsRef.current.push({ placeholder, path: img });
+        setInput((prev) => prev + (prev && !prev.endsWith(' ') ? ' ' : '') + placeholder + ' ');
+        setStaticItems((prev) => [
+          ...prev,
+          {
+            type: 'system',
+            id: nextId(),
+            text: `✓ image attached as ${placeholder} (${img})`,
+            variant: 'success',
+          },
+        ]);
+      }
+      // No image in clipboard → let the terminal's own text paste happen
       return;
     }
 
@@ -841,8 +1014,7 @@ export function App({
   });
 
   const usedTokens = estimateTokens(chatHistory);
-  const cols = process.stdout.columns || 120;
-  const rows = process.stdout.rows || 24;
+  const { cols, rows } = termSize;
   const thinkingPhrase = useThinkingPhrase(isLoading);
 
   if (showModelWizard) {
@@ -869,15 +1041,34 @@ export function App({
       <Static items={staticItems}>
         {(item: StaticItem) => (
           <Box
-            key={item.type === 'banner' ? 'banner' : (item as Extract<StaticItem, { id: number }>).id}
-            width="100%"
+            key={item.id}
+            // Static items don't inherit the terminal width in Ink, so "100%"
+            // resolves to the content's intrinsic size and long lines overflow
+            // instead of word-wrapping. An explicit column width fixes it.
+            width={cols}
           >
             <MessageItem item={item} />
           </Box>
         )}
       </Static>
 
+      {showBanner && !isLoading && <Banner />}
+
       {isLoading && <LiveArea tools={streamTools} subagents={streamSubagents} rows={rows} />}
+
+      {isLoading && liveText ? (
+        <Box paddingLeft={2} paddingRight={2} width={cols}>
+          <Box flexShrink={0}>
+            <Text dimColor>maniac  </Text>
+          </Box>
+          <Box flexGrow={1} flexShrink={1}>
+            <Text>
+              {renderMarkdown(liveText)}
+              {cursorVisible ? <Text color={ACCENT}>▌</Text> : <Text> </Text>}
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
 
       {permPrompt && <PermissionOverlay prompt={permPrompt} />}
 
@@ -897,7 +1088,7 @@ export function App({
         isLoading={isLoading && !permPrompt}
         spinnerFrame={spinnerFrame}
         thinkingPhrase={thinkingPhrase}
-        reasoningText={reasoningText}
+        elapsedSec={elapsedSec}
         activeModel={activeModel}
         queueSize={queueSize}
         sessionId={sessionId}

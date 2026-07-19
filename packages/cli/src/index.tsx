@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { render } from 'ink';
-import { findLatestSession, loadSession } from '@maniac/engine';
+import { findLatestSession, loadSession, runTelegramBot, tryAutoResume } from '@maniac/engine';
 import { App } from './App.js';
 import { parseCliArgs, runHeadless } from './headless.js';
 
@@ -16,20 +16,54 @@ if (args.help) {
 
 Usage:
   maniac                     interactive TUI
+  maniac telegram            bidirectional Telegram bot
   maniac -p "prompt"         headless NDJSON stream
   maniac -p "..." --yolo     headless, auto-approve tools
+  maniac -p "..." -i x.png   attach image (routed via Groq vision)
   maniac --resume [id]       resume session (TUI)
   maniac --continue          resume latest session for cwd
+  maniac --no-auto-resume    skip crash auto-resume on startup
 
 Interactive:
   Shift+Tab   cycle mode (chat/ask/plan)
   Ctrl+T      cycle permission mode
+  Ctrl+V      attach clipboard image as [imageN]
   /help       list slash commands
+  /proposals  list improvement proposals
+  /approve id apply a proposal
+  /reject id  reject a proposal
+
+Telegram requires TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_IDS
+(or TELEGRAM_ALLOWED_USERNAMES). Dangerous tools ask via inline buttons.
+
+Images: text-only code models (NVIDIA/OpenCode) can't see images, so
+attachments are described by the Groq vision model (GROQ_API_KEY required)
+and the description is injected into the code model's prompt.
 `);
   process.exit(0);
 }
 
 async function main() {
+  if (args.telegram) {
+    await runTelegramBot({ cwd: process.cwd() });
+    process.exit(0);
+  }
+
+  // Safe crash auto-resume (read-only pending tools; mutations skipped)
+  if (!args.noAutoResume && !args.headless) {
+    try {
+      const outcome = await tryAutoResume({ enabled: true });
+      if (outcome?.resumed) {
+        console.log(`[immortality] ${outcome.message}`);
+        if (outcome.reply) {
+          console.log(outcome.reply.slice(0, 2000));
+        }
+      }
+    } catch (e: any) {
+      console.error(`[immortality] auto-resume failed: ${e.message}`);
+    }
+  }
+
   if (args.headless) {
     if (!args.prompt) {
       console.error('error: -p requires a prompt string');
@@ -60,8 +94,9 @@ async function main() {
       sessionId,
       history,
       cwd,
+      images: args.images,
     });
-    return;
+    process.exit(0);
   }
 
   let initialSessionId: string | undefined;
