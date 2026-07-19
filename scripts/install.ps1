@@ -1,9 +1,9 @@
 # Maniac Agent — Windows installer
-# Usage: irm https://raw.githubusercontent.com/YOUR_ORG/maniac-agent/main/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
-$REPO     = "https://github.com/YOUR_ORG/maniac-agent.git"
+$REPO     = "https://github.com/StillHue/maniac-agent.git"
 $INSTALL  = "$env:USERPROFILE\.maniac"
 $BIN_DIR  = "$env:USERPROFILE\.maniac\bin"
 

@@ -4,30 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  build:
+  test-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Install dependencies
-        run: yarn install
-
-      - name: Build all
-        run: yarn build:all
-
-      - name: Build CLI
-        run: yarn build:cli
-
-      - name: Build service
-        run: yarn build:service
-
-      - name: Test
-        run: yarn test
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn test
+      - run: yarn build:all
+      - run: yarn build:cli
+      - run: yarn build:service
