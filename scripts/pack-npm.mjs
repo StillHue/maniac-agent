@@ -45,7 +45,7 @@ await esbuild.build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  outfile: path.join(outDir, 'index.js'),
+  outfile: path.join(outDir, 'maniac.js'),
   banner: { js: '#!/usr/bin/env node' },
   // Keep Ink/React/dotenv as runtime deps (native-ish / large / expected peer-ish).
   external: [
@@ -58,10 +58,11 @@ await esbuild.build({
   logLevel: 'info',
 });
 
-// Ensure shebang executable bit is preserved conceptually (npm sets on install).
-const bundled = fs.readFileSync(path.join(outDir, 'index.js'), 'utf8');
+// Ensure shebang is present (npm sets executable bit on install).
+const bundledPath = path.join(outDir, 'maniac.js');
+const bundled = fs.readFileSync(bundledPath, 'utf8');
 if (!bundled.startsWith('#!')) {
-  fs.writeFileSync(path.join(outDir, 'index.js'), '#!/usr/bin/env node\n' + bundled);
+  fs.writeFileSync(bundledPath, '#!/usr/bin/env node\n' + bundled);
 }
 
 const require = createRequire(import.meta.url);
@@ -80,15 +81,15 @@ const pkg = {
   license: 'MIT',
   type: 'module',
   bin: {
-    maniac: './index.js',
+    maniac: './maniac.js',
   },
-  files: ['index.js', 'README.md', 'LICENSE'],
+  files: ['maniac.js', 'README.md', 'LICENSE'],
   engines: {
     node: '>=18',
   },
   repository: rootPkg.repository || {
     type: 'git',
-    url: 'https://github.com/StillHue/maniac-agent.git',
+    url: 'git+https://github.com/StillHue/maniac-agent.git',
   },
   bugs: rootPkg.bugs || { url: 'https://github.com/StillHue/maniac-agent/issues' },
   homepage: rootPkg.homepage || 'https://github.com/StillHue/maniac-agent#readme',

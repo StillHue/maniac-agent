@@ -5,8 +5,12 @@ on:
     tags:
       - 'v*.*.*'
 
+# OIDC trusted publishing (preferred). After the first manual publish on npmjs.com,
+# configure Trusted Publisher → GitHub Actions:
+#   owner: StillHue, repo: maniac-agent, workflow: publish.yml
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -29,7 +33,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Install
@@ -43,8 +47,13 @@ jobs:
       - name: Pack maniac-agent
         run: node scripts/pack-npm.mjs
 
+      - name: Ensure modern npm (OIDC trusted publish)
+        run: npm install -g npm@latest
+
       - name: Publish to npm
         working-directory: dist-npm
         run: npm publish --access public
         env:
+          # Fallback only — Automation tokens that bypass 2FA are restricted for publish.
+          # Prefer Trusted Publisher (OIDC); NODE_AUTH_TOKEN optional after that.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
