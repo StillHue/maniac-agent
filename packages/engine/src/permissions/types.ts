@@ -109,6 +109,8 @@ export const READ_ONLY_SHELL_PREFIXES = [
   'git show',
   'git rev-parse',
   'git ls-files',
+  'git merge-base',
+  'git symbolic-ref',
   'rg ',
   'grep ',
   'cargo check',

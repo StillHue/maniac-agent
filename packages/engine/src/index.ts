@@ -40,3 +40,11 @@ export * from './proposals';
 export { tryAutoResume, resumeFromCheckpoint, tryDetectResume, toolFingerprint } from './resume';
 export { acquireRunLock, releaseRunLock, readRunLock } from './run-lock';
 export { runPool } from './concurrency';
+export {
+  runSentinelReview,
+  parseSentinelArg,
+  SENTINEL_MODEL,
+  SENTINEL_PROVIDER,
+} from './sentinel';
+export type { SentinelScope, SentinelRunOptions } from './sentinel';
+export { chatWithProvider } from './opencode';
