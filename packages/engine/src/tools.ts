@@ -1110,7 +1110,10 @@ export async function executeToolCall(
   }
 }
 
-export function parseToolCalls(text: string): { type: string; command: string }[] {
+export function parseToolCalls(
+  text: string,
+  opts?: { recoverShellFences?: boolean },
+): { type: string; command: string }[] {
   const tools: { type: string; command: string }[] = [];
 
   // Format 1 (native): [TOOL:name]args[/TOOL]  or  TOOL:name]args[/TOOL]
@@ -1151,14 +1154,56 @@ export function parseToolCalls(text: string): { type: string; command: string }[
     } catch {}
   }
 
+  // Format 5 (narrow recovery, opt-in): only when the reply is essentially ONE
+  // shell fence with little surrounding prose. Disabled by default — subagents
+  // must not auto-exec fences (no permission prompt / allowlist there).
+  if (opts?.recoverShellFences && tools.length === 0) {
+    const reFence =
+      /```(?:powershell|ps1|pwsh|bash|sh|zsh|shell|cmd|bat|console)\s*\n([\s\S]*?)```/gi;
+    const fences: string[] = [];
+    while ((m = reFence.exec(text)) !== null) {
+      const script = m[1].trim();
+      if (script.length > 0) fences.push(script);
+    }
+    if (fences.length === 1) {
+      const outside = text
+        .replace(/```(?:powershell|ps1|pwsh|bash|sh|zsh|shell|cmd|bat|console)\s*\n[\s\S]*?```/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (outside.length <= 80) {
+        tools.push({ type: 'exec', command: fences[0] });
+      }
+    }
+  }
+
   return tools;
 }
 
+/**
+ * Remove model chain-of-thought so it never hits the TUI transcript.
+ * Handles closed tags and a still-open tag at the end of a streaming buffer.
+ */
+export function stripThinking(text: string): string {
+  let out = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/◁think▷[\s\S]*?◁\/think▷/gi, '');
+  // Incomplete open block while streaming — hide everything from the open tag on
+  out = out
+    .replace(/<think>[\s\S]*$/i, '')
+    .replace(/<thinking>[\s\S]*$/i, '')
+    .replace(/<reasoning>[\s\S]*$/i, '')
+    .replace(/◁think▷[\s\S]*$/i, '');
+  return out.trim();
+}
+
 export function stripToolCalls(text: string): string {
-  return text
+  return stripThinking(text)
     .replace(/\[?TOOL:[\w\/]+\]\s*[\s\S]*?\s*\[\/TOOL\]/gi, '')
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
     .replace(/```tool_call[\s\S]*?```/gi, '')
+    .replace(/```(?:powershell|ps1|pwsh|bash|sh|zsh|shell|cmd|bat|console)\s*\n[\s\S]*?```/gi, '')
     .replace(/\{"name"\s*:\s*"[\w\/]+"\s*,\s*"(?:parameters|arguments)"\s*:\s*\{[\s\S]*?\}\}/gi, '')
     .trim();
 }

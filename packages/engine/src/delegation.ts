@@ -109,7 +109,7 @@ Rules:
       }
 
       tokenCount += reply.length;
-      const toolCalls = parseToolCalls(reply);
+      const toolCalls = parseToolCalls(reply); // no fence→exec recovery in children
       if (toolCalls.length === 0) {
         finalReply = reply;
         break;
@@ -119,11 +119,12 @@ Rules:
       if (cleanReply) callbacks.onToken?.(cleanReply);
       messages.push({ role: 'assistant', content: reply });
 
+      const allowed = new Set(toolList.map((t) => t.toLowerCase()));
       for (const tc of toolCalls) {
         if (controller.signal.aborted) {
           return { success: false, summary: '[cancelled|timeout]', tokenCount };
         }
-        if (BLOCKED_TOOLS.has(tc.type)) {
+        if (BLOCKED_TOOLS.has(tc.type) || !allowed.has(tc.type)) {
           messages.push({
             role: 'user',
             content: `[RESULTADO]\nFerramenta "${tc.type}" bloqueada para subagentes.`,

@@ -106,7 +106,11 @@ NOVO TEXTO
 [TOOL:http_request] {"method":"GET","url":"https://api.example.com","headers":{"Authorization":"\${ENV:MANIAC_HTTP_SECRET_EXAMPLE}"}} [/TOOL] — chamada HTTP com protecao SSRF (so MANIAC_HTTP_SECRET_*; nunca *_API_KEY cru)
 [TOOL:skill_view] nome [/TOOL] — ve detalhes de uma skill
 [TOOL:skill_create] nome|descricao|conteudo [/TOOL] — cria nova skill
-[TOOL:delegate] objetivo|contexto|ferramentas [/TOOL] — delega tarefa a subagente
+[TOOL:delegate] objetivo|contexto|ls,read,glob,exec [/TOOL] — delega subtarefa a subagente (rode varios em paralelo para exploracao grande)
+- Formato EXATO do delegate: tres campos separados por | . Campo 3 so aceita nomes reais: ls,read,write,edit,grep,glob,exec (nao escreva "disk analyzer").
+- Em tarefas grandes (varrer disco, explorar repo, auditar), DISPARE varios [TOOL:delegate] na mesma resposta.
+- NUNCA deixe a resposta so no thinking/reasoning. Sempre emita texto ou [TOOL:…] no content.
+- No Windows, NUNCA faca Get-ChildItem -Recurse na raiz do usuario/disco inteiro numa tacada so — limite a pastas (Temp, Prefetch, caches) ou use Measure-Object por pasta.
 [TOOL:curator_run] [/TOOL] — executa manutencao de skills
 [TOOL:curator_status] [/TOOL] — status do curador
 
@@ -144,6 +148,8 @@ Regras:
 - Experimente: se uma abordagem falhar, tente outra
 - Se o glob nao encontrar um arquivo, tente ls no diretorio pai para entender a estrutura
 - Use [TOOL:exec] para git, npm, SSH, etc
+- CRITICO: NUNCA cole scripts PowerShell/bash em blocos de codigo markdown (\`\`\`powershell). Isso NAO executa. Sempre use [TOOL:exec] script [/TOOL]. Mostrar codigo sem ferramenta eh falha.
+- Scripts longos: um unico [TOOL:exec] com o script completo, ou varios [TOOL:exec] curtos em sequencia. Nao invente UI de "preview" do comando.
 - Para edicoes complexas, leia o arquivo primeiro, planeje a mudanca, depois use source_edit
 - Faca backup antes de modificar codigo fonte (source_edit ja faz automaticamente)
 - Depois de modificar codigo fonte, execute [TOOL:rebuild_engine] para recompilar

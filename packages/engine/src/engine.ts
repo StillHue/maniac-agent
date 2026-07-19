@@ -310,17 +310,23 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
       return finalReply || `Erro: ${e.message}`;
     }
 
-    const toolCalls = parseToolCalls(reply);
+    const toolCalls = parseToolCalls(reply, { recoverShellFences: true });
 
     if (toolCalls.length === 0) {
-      finalReply = reply;
+      const visible = stripToolCalls(reply) || reply.trim();
+      finalReply = visible;
+      if (!visible) {
+        onEvent({
+          type: 'error',
+          message: 'model returned an empty reply (thinking-only). try again or /model',
+        });
+      }
       break;
     }
 
     const cleanReply = stripToolCalls(reply);
-    if (cleanReply) {
-      onEvent({ type: 'reasoning', content: cleanReply });
-    }
+    // Do NOT emit cleanReply as `reasoning` — that dumped the assistant text
+    // (and any leaked CoT) into the UI / headless "thought" channel.
 
     messages.push({ role: 'assistant', content: reply });
 
@@ -446,18 +452,17 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         }
 
         const waveStartIdx = allToolCalls.length - wave.length;
+        onEvent({ type: 'subagents_dispatch', count: wave.length });
         const results = await runPool(wave, getMaxSubagentConcurrency(), async (item, idx) => {
-          const parts = item.command.split('|');
-          if (parts.length < 2) {
+          const parsed = parseDelegateCommand(item.command);
+          if (!parsed) {
             return {
               id: `sub_invalid_${idx}`,
               success: false,
-              summary: 'formato: objetivo|contexto|ferramentas(opcional)',
+              summary: 'formato: objetivo|contexto|ferramentas(opcional) — tools: ls,read,grep,glob,exec',
             };
           }
-          const goal = parts[0].trim();
-          const context = parts[1].trim();
-          const tools = parts[2] ? parts[2].trim().split(',').map((t) => t.trim()) : undefined;
+          const { goal, context, tools } = parsed;
           const id = `sub_${Date.now().toString(36)}_${idx}_${Math.random().toString(36).slice(2, 5)}`;
           delegateTask(
             goal,
@@ -641,6 +646,41 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
 }
 
 export { runEngine };
+
+const DELEGATE_TOOLS = new Set(['ls', 'read', 'write', 'edit', 'grep', 'glob', 'exec']);
+
+/** Parse `goal|context|tools` and tolerate `goal: …|context: …|tools: ls,exec` from models. */
+function parseDelegateCommand(
+  command: string,
+): { goal: string; context: string; tools?: string[] } | null {
+  const parts = command.split('|').map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const stripLabel = (s: string, labels: string[]) => {
+    for (const label of labels) {
+      const re = new RegExp(`^${label}\\s*:\\s*`, 'i');
+      if (re.test(s)) return s.replace(re, '').trim();
+    }
+    return s;
+  };
+
+  const goal = stripLabel(parts[0], ['goal', 'objetivo', 'task']);
+  const context = stripLabel(parts[1], ['context', 'contexto', 'ctx']);
+  if (!goal || !context) return null;
+
+  let tools: string[] | undefined;
+  if (parts[2]) {
+    const raw = stripLabel(parts[2], ['tools', 'ferramentas', 'tool']);
+    const named = raw
+      .split(/[,;\s]+/)
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => DELEGATE_TOOLS.has(t));
+    // Ignore prose tool lists like "disk analyzer" — fall back to defaults
+    tools = named.length > 0 ? named : undefined;
+  }
+
+  return { goal, context, tools };
+}
 
 async function executeMcpTool(toolKey: string, argsString: string): Promise<{ success: boolean; output: string }> {
   const slashIdx = toolKey.indexOf('/');

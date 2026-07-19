@@ -123,6 +123,9 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse): 
           case 'subagent_start':
             sendEvent('subagent_start', JSON.stringify({ id: event.id, goal: event.goal }));
             break;
+          case 'subagents_dispatch':
+            sendEvent('subagents_dispatch', JSON.stringify({ count: event.count }));
+            break;
           case 'subagent_token':
             sendEvent('subagent_token', JSON.stringify({ id: event.id, content: event.content }));
             break;
