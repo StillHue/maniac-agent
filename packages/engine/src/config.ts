@@ -143,6 +143,17 @@ export const PROVIDER_DEFS: ProviderDef[] = [
     modelsParser: (d) => (d.data || []).map((m: any) => m.id).sort(),
   },
   {
+    id: 'opencode',
+    name: 'OpenCode',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    modelsEndpoint: '/models',
+    chatEndpoint: '/chat/completions',
+    authType: 'bearer',
+    requiresKey: true,
+    format: 'openai',
+    modelsParser: (d) => (d.data || []).map((m: any) => m.id).sort(),
+  },
+  {
     id: 'ollama',
     name: 'Ollama (local)',
     baseUrl: 'http://localhost:11434',

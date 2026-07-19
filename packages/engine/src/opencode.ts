@@ -235,80 +235,73 @@ async function routeCall(
   overrideProvider?: string,
   overrideModel?: string,
 ): Promise<string> {
+  const { hydrateProviderCall } = require('./provider-switch') as typeof import('./provider-switch');
   const cfg = loadManiacConfig();
 
-  if (cfg) {
-    const provider    = overrideProvider || cfg.provider;
-    const model       = overrideModel    || cfg.model;
-    const apiKey      = cfg.apiKey;
-    const baseUrl     = cfg.baseUrl || '';
-    const temperature = cfg.temperature ?? activeProvider.temperature;
-    const maxTokens   = cfg.maxTokens   ?? activeProvider.maxTokens;
-    const def         = PROVIDER_DEFS.find(d => d.id === provider);
+  const provider = overrideProvider || cfg?.provider || activeProvider.provider;
+  const hydrated = hydrateProviderCall(provider, overrideModel || (overrideProvider ? undefined : cfg?.model));
+  const model = hydrated.model;
+  const apiKey = hydrated.apiKey;
+  const baseUrl = hydrated.baseUrl;
+  const temperature = hydrated.temperature;
+  const maxTokens = hydrated.maxTokens;
+  const def = PROVIDER_DEFS.find(d => d.id === provider);
 
-    if (provider === 'auto') {
-      return callAutoRouter(messages, onEvent, cfg.autoSlots, temperature, maxTokens);
-    }
-    if (provider === 'gemini' || def?.format === 'gemini') {
-      return callGemini(messages, onEvent, { apiKey, model, temperature, maxTokens });
-    }
-    if (provider === 'anthropic' || def?.format === 'anthropic') {
-      return callAnthropic(messages, onEvent, { apiKey, model, temperature, maxTokens });
-    }
-    if (provider === 'hermes') {
-      return callHermes(messages, onEvent);
-    }
-    const resolvedBase = baseUrl || def?.baseUrl || OPENCODE_API_URL.replace('/chat/completions', '');
-    return callOpenAICompat(messages, onEvent, { apiKey, baseUrl: resolvedBase, model, temperature, maxTokens });
+  if (provider === 'auto') {
+    return callAutoRouter(messages, onEvent, hydrated.autoSlots, temperature, maxTokens);
+  }
+  if (provider === 'gemini' || def?.format === 'gemini') {
+    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+    return callGemini(messages, onEvent, { apiKey, model, temperature, maxTokens });
+  }
+  if (provider === 'anthropic' || def?.format === 'anthropic') {
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+    return callAnthropic(messages, onEvent, { apiKey, model, temperature, maxTokens });
+  }
+  if (provider === 'hermes') {
+    return callHermes(messages, onEvent);
+  }
+  if (provider === 'opencode') {
+    return callOpenAICompat(messages, onEvent, {
+      apiKey: apiKey || OPENCODE_API_KEY,
+      baseUrl: baseUrl || OPENCODE_API_URL.replace('/chat/completions', ''),
+      model, temperature, maxTokens,
+    });
+  }
+  if (provider === 'groq') {
+    if (!apiKey && !GROQ_API_KEY) throw new Error('GROQ_API_KEY not set');
+    return callOpenAICompat(messages, onEvent, {
+      apiKey: apiKey || GROQ_API_KEY,
+      baseUrl: baseUrl || 'https://api.groq.com/openai/v1',
+      model, temperature, maxTokens,
+    });
+  }
+  if (provider === 'nvidia') {
+    if (!apiKey && !NVIDIA_API_KEY) throw new Error('NVIDIA_API_KEY not set');
+    return callOpenAICompat(messages, onEvent, {
+      apiKey: apiKey || NVIDIA_API_KEY,
+      baseUrl: baseUrl || NVIDIA_API_URL,
+      model, temperature, maxTokens,
+    });
   }
 
-  // ── Fallback: legacy env-var routing ─────────────────────────────────────
-  const provider    = overrideProvider || activeProvider.provider;
-  const model       = overrideModel    || activeProvider.model;
-  const temperature = activeProvider.temperature;
-  const maxTokens   = activeProvider.maxTokens;
-
-  switch (provider) {
-    case 'auto':
-      return callAutoRouter(messages, onEvent, undefined, temperature, maxTokens);
-    case 'opencode':
-      return callOpenAICompat(messages, onEvent, {
-        apiKey: OPENCODE_API_KEY,
-        baseUrl: OPENCODE_API_URL.replace('/chat/completions', ''),
-        model, temperature, maxTokens,
-      });
-    case 'groq':
-      if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not set');
-      return callOpenAICompat(messages, onEvent, { apiKey: GROQ_API_KEY, baseUrl: 'https://api.groq.com/openai/v1', model, temperature, maxTokens });
-    case 'gemini':
-      if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not set');
-      return callGemini(messages, onEvent, { apiKey: GEMINI_API_KEY, model, temperature, maxTokens });
-    case 'nvidia':
-      if (!NVIDIA_API_KEY) throw new Error('NVIDIA_API_KEY not set');
-      return callOpenAICompat(messages, onEvent, { apiKey: NVIDIA_API_KEY, baseUrl: NVIDIA_API_URL, model, temperature, maxTokens });
-    case 'hermes':
-      return callHermes(messages, onEvent);
-    default:
-      return callOpenAICompat(messages, onEvent, {
-        apiKey: OPENCODE_API_KEY,
-        baseUrl: OPENCODE_API_URL.replace('/chat/completions', ''),
-        model, temperature, maxTokens,
-      });
+  const resolvedBase = baseUrl || def?.baseUrl || OPENCODE_API_URL.replace('/chat/completions', '');
+  if (def?.requiresKey && !apiKey) {
+    throw new Error(`API key not set for provider ${provider}`);
   }
+  return callOpenAICompat(messages, onEvent, { apiKey, baseUrl: resolvedBase, model, temperature, maxTokens });
 }
 
 // ─── Provider inference from message text ────────────────────────────────────
 
-function inferProviderFromMessage(messages: ChatMessage[]): string | undefined {
+function inferProviderFromMessage(messages: ChatMessage[]): { provider: string; model?: string } | undefined {
   const last = [...messages].reverse().find(m => m.role === 'user');
   if (!last) return undefined;
-  const msg = last.content.toLowerCase();
-  if (msg.includes('use groq') || msg.includes('usar groq')) return 'groq';
-  if (msg.includes('use gemini') || msg.includes('usar gemini')) return 'gemini';
-  if (msg.includes('use hermes') || msg.includes('usar hermes')) return 'hermes';
-  if (msg.includes('use opencode') || msg.includes('usar opencode')) return 'opencode';
-  if (msg.includes('use nvidia') || msg.includes('usar nvidia')) return 'nvidia';
-  return undefined;
+  const { parseProviderIntent, applyProviderSwitch } = require('./provider-switch') as typeof import('./provider-switch');
+  const intent = parseProviderIntent(last.content);
+  if (!intent) return undefined;
+  applyProviderSwitch(intent.provider, intent.model);
+  return intent;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -319,11 +312,19 @@ export async function callOpenCode(
 ): Promise<string> {
   const detected = inferProviderFromMessage(messages);
   try {
-    const result = await routeCall(messages, onEvent, detected || undefined);
-    providerHistory.push({ task: messages[messages.length - 1]?.content?.slice(0, 100) || '', provider: detected || activeProvider.provider, success: true });
+    const result = await routeCall(messages, onEvent, detected?.provider, detected?.model);
+    providerHistory.push({
+      task: messages[messages.length - 1]?.content?.slice(0, 100) || '',
+      provider: detected?.provider || activeProvider.provider,
+      success: true,
+    });
     return result;
   } catch (e: any) {
-    providerHistory.push({ task: messages[messages.length - 1]?.content?.slice(0, 100) || '', provider: detected || activeProvider.provider, success: false });
+    providerHistory.push({
+      task: messages[messages.length - 1]?.content?.slice(0, 100) || '',
+      provider: detected?.provider || activeProvider.provider,
+      success: false,
+    });
     throw e;
   }
 }
