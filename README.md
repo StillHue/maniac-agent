@@ -141,7 +141,7 @@ Maniac works with any of the providers below — add the key for **at least one*
 | OpenCode | `OPENCODE_API_KEY` | OpenCode Zen models (e.g. `big-pickle`). |
 | Ollama | — | Local models, no key required (`http://localhost:11434`). |
 | Custom | — | Any OpenAI-compatible endpoint. |
-| Auto | — | Built-in router: NVIDIA primary, OpenCode fallback. |
+| Auto | — | Built-in router: OpenCode Zen free models primary (big-pickle → deepseek-v4-flash-free → nemotron-3-ultra-free → mimo-v2.5-free → north-mini-code-free), NVIDIA NIM last fallback. |
 
 ---
 

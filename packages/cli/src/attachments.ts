@@ -18,11 +18,14 @@ const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
 export function captureClipboardImage(): string | null {
   if (process.platform !== 'win32') return null;
   const dest = path.join(os.tmpdir(), `maniac-paste-${Date.now()}.png`);
+  // PowerShell single-quoted strings: only ' needs escaping (backslashes are literal)
+  const psDest = dest.replace(/'/g, "''");
   const script = `
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 $img = [System.Windows.Forms.Clipboard]::GetImage()
 if ($img -ne $null) {
-  $img.Save('${dest.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png)
+  $img.Save('${psDest}', [System.Drawing.Imaging.ImageFormat]::Png)
   Write-Output 'IMG'
   exit 0
 }

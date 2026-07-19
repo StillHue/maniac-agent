@@ -18,6 +18,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'resume', args: '[id]', description: 'list or resume a saved session' },
   { name: 'continue', description: 'resume most recent session for this cwd' },
   { name: 'history', description: 'show session messages' },
+  { name: 'paste', description: 'attach clipboard image as [imageN]' },
   { name: 'proposals', description: 'list pending improvement proposals' },
   { name: 'approve', args: '<id>', description: 'apply an improvement proposal' },
   { name: 'reject', args: '<id>', description: 'reject an improvement proposal' },
@@ -35,6 +36,7 @@ export const HELP_TEXT = [
   '',
   '  Shift+Tab               cycle engine mode (chat → ask → plan)',
   '  Ctrl+T                  cycle permission mode',
+  '  Alt+V                   attach clipboard image (or /paste)',
   '  ↑/↓                     command history',
 ].join('\n');
 

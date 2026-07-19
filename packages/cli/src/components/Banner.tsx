@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { loadManiacConfig, PROVIDER_DEFS } from '@maniac/engine';
 import { ACCENT, ACCENT_BRIGHT } from '../theme.js';
@@ -165,8 +165,10 @@ export function Banner() {
   const panelPad = basePad;
   const innerWidth = panelWidth - 2;
 
-  const info = resolveSessionInfo();
-  const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+  // Picked once per mount — the banner re-renders every cursor blink, and
+  // re-rolling the greeting each render made it flicker through phrases.
+  const [greeting] = useState(() => GREETINGS[Math.floor(Math.random() * GREETINGS.length)]);
+  const [info] = useState(resolveSessionInfo);
   const tagline = "the 'what the hell, let's try it' agent";
   const tagWidth = showScene ? SCENE_WIDTH : panelWidth;
   const tagPad = basePad + Math.max(0, Math.floor((tagWidth - tagline.length - 4) / 2));

@@ -177,7 +177,7 @@ export const PROVIDER_DEFS: ProviderDef[] = [
   },
   {
     id: 'auto',
-    name: 'Auto (NVIDIA + OpenCode)',
+    name: 'Auto (OpenCode Zen free → NVIDIA)',
     baseUrl: '',
     modelsEndpoint: '',
     chatEndpoint: '',
@@ -189,21 +189,49 @@ export const PROVIDER_DEFS: ProviderDef[] = [
 
 const CONFIG_PATH = path.join(os.homedir(), '.maniac', 'config.json');
 
-/** Default auto-router slots — NVIDIA primary, OpenCode secondary */
+/** Default auto-router slots — OpenCode Zen free models primary, NVIDIA NIM last fallback */
 export const AUTO_SLOTS: AutoRouterSlot[] = [
-  {
-    provider: 'nvidia',
-    model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-    apiKey: process.env.NVIDIA_API_KEY || '',
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
-    priority: 90,
-  },
   {
     provider: 'opencode',
     model: 'big-pickle',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 70,
+    priority: 100,
+  },
+  {
+    provider: 'opencode',
+    model: 'deepseek-v4-flash-free',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 95,
+  },
+  {
+    provider: 'opencode',
+    model: 'nemotron-3-ultra-free',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 90,
+  },
+  {
+    provider: 'opencode',
+    model: 'mimo-v2.5-free',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 85,
+  },
+  {
+    provider: 'opencode',
+    model: 'north-mini-code-free',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 80,
+  },
+  {
+    provider: 'nvidia',
+    model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+    apiKey: process.env.NVIDIA_API_KEY || '',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    priority: 50,
   },
 ];
 
