@@ -23,3 +23,20 @@ export * from './proactive';
 export * from './immortality';
 export * from './server';
 export * from './tool-catalog';
+export { describeImage, describeImages, buildVisionAugmentedMessage, isImagePath, visionAvailable, getVisionModelLabel, IMAGE_EXTENSIONS } from './vision';
+export type { ImageDescription } from './vision';
+export {
+  parseProviderIntent,
+  applyProviderSwitch,
+  hydrateProviderCall,
+  DEFAULT_MODELS,
+  PROVIDER_ENV_KEY,
+} from './provider-switch';
+export { toolHttpRequest } from './http/tools-http';
+export { assertSafeUrl, isBlockedIp } from './http/ssrf';
+export { runTelegramBot, stopTelegramBot, listKnownChats, isAllowlisted, loadAllowlist } from './telegram';
+export * from './autonomy';
+export * from './proposals';
+export { tryAutoResume, resumeFromCheckpoint, tryDetectResume, toolFingerprint } from './resume';
+export { acquireRunLock, releaseRunLock, readRunLock } from './run-lock';
+export { runPool } from './concurrency';

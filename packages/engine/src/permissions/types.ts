@@ -70,7 +70,6 @@ export const READ_ONLY_TOOLS = new Set([
   'custom_tools_list',
   'server_status',
   'immortality_status',
-  'immortality_resume',
   'telegram_list_chats',
   'curator_status',
 ]);
