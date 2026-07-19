@@ -6,7 +6,6 @@
 
 <p align="center">
   <strong>The "what the hell, let's try it" agent for your maniac ideas.</strong><br />
-  <em>chipzinho dando tchauzinho ⚡</em>
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
