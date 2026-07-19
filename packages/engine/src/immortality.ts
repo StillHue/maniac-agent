@@ -26,6 +26,14 @@ export const DEATHNOTE_FILE = path.join(MANIAC_DIR, 'deathnote.md');
 
 // ─── Tipos ─────────────────────────────────────────────────────────────────
 
+export interface CheckpointToolCall {
+  id: string;
+  type: string;
+  args: string;
+  status: 'pending' | 'done' | 'skipped' | 'failed';
+  resultPreview?: string;
+}
+
 export interface CheckpointData {
   version: number;
   timestamp: number;
@@ -41,6 +49,18 @@ export interface CheckpointData {
     cwd: string;
     processId: number;
     hostname: string;
+    lockToken?: string;
+  };
+  /** v2 fields */
+  runId?: string;
+  sessionId?: string | null;
+  phase?: 'awaiting_llm' | 'executing_tools' | 'awaiting_permission' | 'completed';
+  permissionMode?: string;
+  repoPath?: string;
+  toolBatch?: {
+    assistantRaw: string;
+    calls: CheckpointToolCall[];
+    toolIter: number;
   };
 }
 
@@ -103,11 +123,18 @@ export function saveCheckpoint(state: {
   lastAssistantReply: string;
   toolExecutionIndex: number;
   totalToolExecutions: number;
+  runId?: string;
+  sessionId?: string | null;
+  phase?: CheckpointData['phase'];
+  permissionMode?: string;
+  repoPath?: string;
+  toolBatch?: CheckpointData['toolBatch'];
+  lockToken?: string;
 }): void {
   try {
     ensureDir();
     const data: CheckpointData = {
-      version: 1,
+      version: state.toolBatch ? 2 : 1,
       timestamp: Date.now(),
       session: {
         messages: state.messages.slice(-50),
@@ -118,10 +145,17 @@ export function saveCheckpoint(state: {
         totalToolExecutions: state.totalToolExecutions,
       },
       environment: {
-        cwd: process.cwd(),
+        cwd: state.repoPath || process.cwd(),
         processId: process.pid,
         hostname: os.hostname(),
+        lockToken: state.lockToken,
       },
+      runId: state.runId,
+      sessionId: state.sessionId,
+      phase: state.phase,
+      permissionMode: state.permissionMode,
+      repoPath: state.repoPath,
+      toolBatch: state.toolBatch,
     };
     atomicWrite(CHECKPOINT_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
@@ -134,7 +168,7 @@ export function loadCheckpoint(): CheckpointData | null {
     if (!fs.existsSync(CHECKPOINT_FILE)) return null;
     const raw = fs.readFileSync(CHECKPOINT_FILE, 'utf8');
     const data = JSON.parse(raw) as CheckpointData;
-    if (data.version !== 1) return null;
+    if (data.version !== 1 && data.version !== 2) return null;
     return data;
   } catch {
     return null;
