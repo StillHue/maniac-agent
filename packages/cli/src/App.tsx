@@ -18,6 +18,7 @@ import {
   updateProposalStatus,
   type PermissionMode,
   type PermissionPromptDecision,
+  type QueueEntry,
 } from '@maniac/engine';
 import type { ChatMessage, StreamEvent } from '@maniac/types';
 import {
@@ -45,6 +46,7 @@ import { renderMarkdown } from './markdown.js';
 import { ACCENT } from './theme.js';
 import { LiveArea } from './components/LiveArea.js';
 import { Footer } from './components/Footer.js';
+import { QueuePanel } from './components/QueuePanel.js';
 import { ModelWizard } from './components/ModelWizard.js';
 import { PermissionOverlay } from './components/PermissionOverlay.js';
 import { SlashMenu } from './components/SlashMenu.js';
@@ -133,8 +135,15 @@ export function App({
     !(initialMessages && initialMessages.length > 0),
   );
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>(initialMessages || []);
+  const chatHistoryRef = useRef(chatHistory);
+  useEffect(() => {
+    chatHistoryRef.current = chatHistory;
+  }, [chatHistory]);
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId);
-  const [queueSize, setQueueSize] = useState(0);
+  const [queueEntries, setQueueEntries] = useState<QueueEntry[]>([]);
+  const syncQueue = useCallback(() => {
+    setQueueEntries(globalPromptQueue.list());
+  }, []);
 
   const [input, setInput] = useState('');
   const inputRef = useRef(input);
@@ -245,6 +254,31 @@ export function App({
   const historyIdx = useRef<number>(-1);
   const savedInput = useRef<string>('');
   const drainingRef = useRef(false);
+  // Synchronous run lock — React's isLoading state lags one commit behind,
+  // so submit + drain must gate on this ref to avoid concurrent doRun calls.
+  const runningRef = useRef(false);
+
+  const abortCurrentRun = useCallback((announce = true) => {
+    abortRef.current.aborted = true;
+    abortControllerRef.current?.abort();
+    // Do NOT clear runningRef / isLoading here — the in-flight doRun must keep
+    // the lock until harness.run returns and clearLive runs. Releasing early
+    // lets the queue drain (or a new submit) start a second concurrent run.
+    setLiveText('');
+    setStreamTools([]);
+    setStreamSubagents([]);
+    if (permResolveRef.current) {
+      permResolveRef.current('deny');
+      permResolveRef.current = null;
+      setPermPrompt(null);
+    }
+    if (announce) {
+      setStaticItems((prev) => [
+        ...prev,
+        { type: 'system', id: nextId(), text: 'cancelled', variant: 'warn' },
+      ]);
+    }
+  }, []);
 
   const requestPermission = useCallback(
     (req: { id: string; tool: string; args: string; reason?: string }) =>
@@ -257,6 +291,8 @@ export function App({
 
   const doRun = useCallback(
     async (message: string, history: ChatMessage[], mode: string, images: string[] = []) => {
+      if (runningRef.current) return;
+      runningRef.current = true;
       const abort = { aborted: false };
       abortRef.current = abort;
       const controller = new AbortController();
@@ -278,6 +314,7 @@ export function App({
           .trim();
 
       const clearLive = () => {
+        runningRef.current = false;
         setIsLoading(false);
         setLiveText('');
         setStreamTools([]);
@@ -427,22 +464,28 @@ export function App({
         ...prev,
         { type: 'assistant', id: nextId(), text: fullText, tools: [...tools] },
       ]);
-      setChatHistory((prev) => [...prev, { role: 'assistant', content: fullText }]);
+      setChatHistory((prev) => {
+        const next = [...prev, { role: 'assistant' as const, content: fullText }];
+        chatHistoryRef.current = next;
+        return next;
+      });
       clearLive();
     },
     [requestPermission, sessionId],
   );
 
   const drainQueue = useCallback(async () => {
-    if (drainingRef.current || isLoading) return;
+    if (drainingRef.current || runningRef.current || isLoading) return;
     const next = globalPromptQueue.dequeue();
-    setQueueSize(globalPromptQueue.size);
+    syncQueue();
     if (!next) return;
     drainingRef.current = true;
     try {
       setStaticItems((prev) => [...prev, { type: 'user', id: nextId(), text: next.text }]);
-      const hist = chatHistory;
-      setChatHistory((prev) => [...prev, { role: 'user', content: next.text }]);
+      const hist = chatHistoryRef.current;
+      const withUser = [...hist, { role: 'user' as const, content: next.text }];
+      chatHistoryRef.current = withUser;
+      setChatHistory(withUser);
       const queuedImages = resolveMessageImages(next.text, attachmentsRef.current);
       attachmentsRef.current = attachmentsRef.current.filter(
         (a) => !next.text.includes(a.placeholder),
@@ -450,13 +493,49 @@ export function App({
       await doRun(next.text, hist, cfgRef.current.mode, queuedImages);
     } finally {
       drainingRef.current = false;
-      if (globalPromptQueue.size > 0) void drainQueue();
+      syncQueue();
+      if (globalPromptQueue.size > 0 && !runningRef.current) void drainQueue();
     }
-  }, [chatHistory, doRun, isLoading]);
+  }, [doRun, isLoading, syncQueue]);
 
   useEffect(() => {
     if (!isLoading && globalPromptQueue.size > 0) void drainQueue();
   }, [isLoading, drainQueue]);
+
+  // Grabs an image from the clipboard and appends an [imageN] placeholder to
+  // the input. Shared by Ctrl+V and /paste (terminals like Windows Terminal
+  // intercept Ctrl+V for text paste, so the keypress may never reach us).
+  const attachClipboardImage = useCallback((warnIfEmpty: boolean) => {
+    const img = captureClipboardImage();
+    if (!img) {
+      if (warnIfEmpty) {
+        setStaticItems((prev) => [
+          ...prev,
+          {
+            type: 'system',
+            id: nextId(),
+            text: 'no image in clipboard (copy a screenshot first, or type the file path)',
+            variant: 'warn',
+          },
+        ]);
+      }
+      return false;
+    }
+    imageCounter.current += 1;
+    const placeholder = `[image${imageCounter.current}]`;
+    attachmentsRef.current.push({ placeholder, path: img });
+    setInput((prev) => prev + (prev && !prev.endsWith(' ') ? ' ' : '') + placeholder + ' ');
+    setStaticItems((prev) => [
+      ...prev,
+      {
+        type: 'system',
+        id: nextId(),
+        text: `✓ image attached as ${placeholder} (${img})`,
+        variant: 'success',
+      },
+    ]);
+    return true;
+  }, []);
 
   const handleSlash = useCallback(
     (raw: string) => {
@@ -479,6 +558,10 @@ export function App({
 
         case 'clear':
         case 'new':
+          if (runningRef.current) abortCurrentRun(false);
+          globalPromptQueue.clear();
+          syncQueue();
+          chatHistoryRef.current = [];
           setChatHistory([]);
           setSessionId(undefined);
           setStaticItems([]);
@@ -491,6 +574,7 @@ export function App({
             CONTEXT_LIMIT,
           );
           const withoutSystem = compressed.filter((m) => m.role !== 'system');
+          chatHistoryRef.current = withoutSystem;
           setChatHistory(withoutSystem);
           setStaticItems((prev) => [
             ...prev,
@@ -603,6 +687,7 @@ export function App({
               ]);
             } else {
               setSessionId(rec.summary.id);
+              chatHistoryRef.current = rec.messages;
               setChatHistory(rec.messages);
               setShowBanner(false);
               setStaticItems([
@@ -629,6 +714,7 @@ export function App({
             const rec = loadSession(process.cwd(), latest.id);
             if (rec) {
               setSessionId(rec.summary.id);
+              chatHistoryRef.current = rec.messages;
               setChatHistory(rec.messages);
               setShowBanner(false);
               setStaticItems([
@@ -662,6 +748,10 @@ export function App({
               { type: 'system', id: nextId(), text: lines, variant: 'info' },
             ]);
           }
+          break;
+
+        case 'paste':
+          attachClipboardImage(true);
           break;
 
         case 'proposals': {
@@ -746,7 +836,7 @@ export function App({
           ]);
       }
     },
-    [chatHistory, exit],
+    [chatHistory, exit, attachClipboardImage, syncQueue, abortCurrentRun],
   );
 
   const handleSubmit = useCallback(
@@ -768,18 +858,11 @@ export function App({
       setInput('');
       setShowBanner(false);
 
-      if (isLoading) {
+      // Prefer the sync run lock over React's isLoading — it can lag one frame
+      // behind doRun starting (esp. right after a queue drain dequeues).
+      if (isLoading || runningRef.current || drainingRef.current) {
         globalPromptQueue.enqueue(trimmed);
-        setQueueSize(globalPromptQueue.size);
-        setStaticItems((prev) => [
-          ...prev,
-          {
-            type: 'system',
-            id: nextId(),
-            text: `queued (${globalPromptQueue.size})`,
-            variant: 'info',
-          },
-        ]);
+        syncQueue();
         return;
       }
 
@@ -804,10 +887,11 @@ export function App({
 
       setStaticItems((prev) => [...prev, { type: 'user', id: nextId(), text: trimmed }]);
       const newHistory = [...chatHistory, { role: 'user' as const, content: trimmed }];
+      chatHistoryRef.current = newHistory;
       setChatHistory(newHistory);
       void doRun(trimmed, chatHistory, cfgRef.current.mode, images);
     },
-    [chatHistory, handleSlash, doRun, isLoading],
+    [chatHistory, handleSlash, doRun, isLoading, syncQueue],
   );
 
   useInput((inputChar: string, key: Key) => {
@@ -843,26 +927,10 @@ export function App({
       return;
     }
 
-    const cancelRun = () => {
-      abortRef.current.aborted = true;
-      abortControllerRef.current?.abort();
-      setIsLoading(false);
-      setLiveText('');
-      setStreamTools([]);
-      setStreamSubagents([]);
-      if (permResolveRef.current) {
-        permResolveRef.current('deny');
-        permResolveRef.current = null;
-        setPermPrompt(null);
-      }
-      setStaticItems((prev) => [
-        ...prev,
-        { type: 'system', id: nextId(), text: 'cancelled', variant: 'warn' },
-      ]);
-    };
+    const cancelRun = () => abortCurrentRun(true);
 
     if (key.ctrl && inputChar === 'c') {
-      if (isLoading) {
+      if (isLoading || runningRef.current) {
         cancelRun();
         return;
       }
@@ -872,7 +940,7 @@ export function App({
     }
 
     // Esc cancels the current run (Grok/Claude-style interrupt)
-    if (key.escape && isLoading && !permPrompt) {
+    if (key.escape && (isLoading || runningRef.current) && !permPrompt) {
       cancelRun();
       return;
     }
@@ -892,25 +960,15 @@ export function App({
       return;
     }
 
-    // Ctrl+V → attach image from clipboard as [imageN]
-    if (key.ctrl && inputChar === 'v') {
-      const img = captureClipboardImage();
-      if (img) {
-        imageCounter.current += 1;
-        const placeholder = `[image${imageCounter.current}]`;
-        attachmentsRef.current.push({ placeholder, path: img });
-        setInput((prev) => prev + (prev && !prev.endsWith(' ') ? ' ' : '') + placeholder + ' ');
-        setStaticItems((prev) => [
-          ...prev,
-          {
-            type: 'system',
-            id: nextId(),
-            text: `✓ image attached as ${placeholder} (${img})`,
-            variant: 'success',
-          },
-        ]);
-      }
-      // No image in clipboard → let the terminal's own text paste happen
+    // Ctrl+V / Alt+V → attach image from clipboard as [imageN].
+    // Alt+V exists because Windows Terminal binds Ctrl+V to text paste and
+    // the app never receives the keypress.
+    if ((key.ctrl || key.meta) && inputChar === 'v') {
+      const attached = attachClipboardImage(Boolean(key.meta));
+      // Only consume the key when we attached an image (or Alt+V, which is
+      // explicitly an image shortcut). Otherwise fall through so a lone 'v'
+      // isn't typed — but we still return to avoid inserting the letter.
+      if (attached || key.meta) return;
       return;
     }
 
@@ -1076,6 +1134,8 @@ export function App({
         <SlashMenu commands={slashMatches} selected={Math.min(slashSelected, slashMatches.length - 1)} />
       )}
 
+      <QueuePanel entries={queueEntries} />
+
       <Footer
         git={git}
         tokens={usedTokens}
@@ -1090,7 +1150,7 @@ export function App({
         thinkingPhrase={thinkingPhrase}
         elapsedSec={elapsedSec}
         activeModel={activeModel}
-        queueSize={queueSize}
+        queueSize={queueEntries.length}
         sessionId={sessionId}
       />
     </Box>

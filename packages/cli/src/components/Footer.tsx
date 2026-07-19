@@ -55,26 +55,26 @@ export function Footer({
     <Box flexDirection="column" flexShrink={0}>
       <Text dimColor>{'─'.repeat(cols)}</Text>
 
-      <Box paddingLeft={2} paddingTop={1} paddingBottom={1}>
-        {isLoading ? (
+      {isLoading && (
+        <Box paddingLeft={2} paddingTop={1}>
           <Text>
-            {/* Fixed-width slot for the pulse glyph: these asterisks have
-                inconsistent widths in some fonts, which causes jitter. */}
             <Text color={ACCENT}>{spinnerFrame}</Text>
             <Text> {thinkingPhrase}</Text>
             <Text dimColor>
               {'  '}({elapsedSec}s · esc to interrupt)
             </Text>
           </Text>
-        ) : (
-          <>
-            <Text dimColor>{'> '}</Text>
-            <Text>
-              {value}
-              {cursorVisible ? <Text color="white">█</Text> : <Text> </Text>}
-            </Text>
-          </>
-        )}
+        </Box>
+      )}
+
+      <Box paddingLeft={2} paddingTop={isLoading ? 0 : 1} paddingBottom={1}>
+        <Text dimColor>{'> '}</Text>
+        <Text>
+          {value}
+          {/* Fixed color: "white" resolves via the terminal theme and can
+              render green/odd on custom schemes. */}
+          {cursorVisible ? <Text color={ACCENT}>█</Text> : <Text> </Text>}
+        </Text>
       </Box>
 
       <Box paddingLeft={2} paddingRight={2}>

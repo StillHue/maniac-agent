@@ -8,6 +8,10 @@ import { parseCliArgs, runHeadless } from './headless.js';
 
 process.on('SIGINT', () => process.exit());
 process.on('SIGTERM', () => process.exit());
+// The TUI draws its own fake cursor; re-show the real one on the way out.
+process.on('exit', () => {
+  if (process.stdout.isTTY) process.stdout.write('\x1b[?25h');
+});
 
 const args = parseCliArgs(process.argv);
 
@@ -27,7 +31,8 @@ Usage:
 Interactive:
   Shift+Tab   cycle mode (chat/ask/plan)
   Ctrl+T      cycle permission mode
-  Ctrl+V      attach clipboard image as [imageN]
+  Alt+V       attach clipboard image as [imageN] (also /paste; Ctrl+V works
+              in terminals that don't intercept it for text paste)
   /help       list slash commands
   /proposals  list improvement proposals
   /approve id apply a proposal
@@ -117,7 +122,9 @@ async function main() {
     }
   }
 
-  process.stdout.write('\x1b[2J\x1b[H');
+  // Clear screen, home the cursor, and hide the terminal's hardware cursor —
+  // the TUI renders its own; otherwise both blink side by side.
+  process.stdout.write('\x1b[2J\x1b[H\x1b[?25l');
   render(<App initialSessionId={initialSessionId} initialMessages={initialMessages} />);
 }
 
