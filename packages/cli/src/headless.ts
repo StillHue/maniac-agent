@@ -58,6 +58,12 @@ export function projectNdjson(event: StreamEvent): Record<string, unknown> | nul
       return { type: 'permission_mode', mode: event.mode };
     case 'compact':
       return { type: 'compact', summary: event.summary };
+    case 'subagents_dispatch':
+      return { type: 'subagents_dispatch', count: event.count };
+    case 'subagent_start':
+      return { type: 'subagent_start', id: event.id, goal: event.goal };
+    case 'subagent_done':
+      return { type: 'subagent_done', id: event.id, success: event.success, summary: event.summary };
     default:
       return null;
   }

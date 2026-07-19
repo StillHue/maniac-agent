@@ -59,9 +59,9 @@ import type {
 } from './ui-types.js';
 import { PERMISSION_OPTIONS } from './ui-types.js';
 
-// Claude-style organic pulse: the asterisk "blooms" and shrinks
-// (ping-pong) instead of spinning like braille dots.
-const SPINNER_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
+// Braille spinner — dingbats like ✻/✽ render as green emoji tiles in
+// Windows Terminal, so keep frames in the monochrome braille block.
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const MANIAC_THINKING = [
   'It makes sense?',
@@ -81,6 +81,14 @@ const MANIAC_THINKING = [
 let _itemId = 1;
 function nextId() {
   return _itemId++;
+}
+
+/** Keep the live region short so Ink never scrolls the prompt off-screen. */
+function clipToLastLines(text: string, maxLines: number): string {
+  if (maxLines <= 0 || !text) return '';
+  const lines = text.split('\n');
+  if (lines.length <= maxLines) return text;
+  return `…\n${lines.slice(-(maxLines - 1)).join('\n')}`;
 }
 
 function getActiveModelLabel(): string {
@@ -180,6 +188,7 @@ export function App({
   const [liveText, setLiveText] = useState('');
   const [streamTools, setStreamTools] = useState<ToolCallView[]>([]);
   const [streamSubagents, setStreamSubagents] = useState<SubagentStatus[]>([]);
+  const [subagentDispatchCount, setSubagentDispatchCount] = useState(0);
   const abortRef = useRef<{ aborted: boolean }>({ aborted: false });
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -267,6 +276,7 @@ export function App({
     setLiveText('');
     setStreamTools([]);
     setStreamSubagents([]);
+    setSubagentDispatchCount(0);
     if (permResolveRef.current) {
       permResolveRef.current('deny');
       permResolveRef.current = null;
@@ -301,6 +311,7 @@ export function App({
       setLiveText('');
       setStreamTools([]);
       setStreamSubagents([]);
+      setSubagentDispatchCount(0);
 
       let fullText = '';
       let cleanedText = '';
@@ -319,6 +330,7 @@ export function App({
         setLiveText('');
         setStreamTools([]);
         setStreamSubagents([]);
+        setSubagentDispatchCount(0);
         setPermPrompt(null);
       };
 
@@ -343,11 +355,8 @@ export function App({
                 break;
               }
               case 'reasoning': {
-                // Non-streaming providers only emit the full text at once.
-                if (!cleanedText) {
-                  cleanedText = event.content;
-                  setLiveText(cleanedText);
-                }
+                // Model chain-of-thought — keep it off the transcript.
+                // The Footer spinner already signals that work is in progress.
                 break;
               }
               case 'tool_start': {
@@ -384,6 +393,10 @@ export function App({
                   tc.output = event.output;
                 }
                 setStreamTools([...tools]);
+                break;
+              }
+              case 'subagents_dispatch': {
+                setSubagentDispatchCount(event.count);
                 break;
               }
               case 'subagent_start': {
@@ -460,15 +473,19 @@ export function App({
         return;
       }
 
-      setStaticItems((prev) => [
-        ...prev,
-        { type: 'assistant', id: nextId(), text: fullText, tools: [...tools] },
-      ]);
-      setChatHistory((prev) => {
-        const next = [...prev, { role: 'assistant' as const, content: fullText }];
-        chatHistoryRef.current = next;
-        return next;
-      });
+      if (fullText.trim() || tools.length > 0) {
+        setStaticItems((prev) => [
+          ...prev,
+          { type: 'assistant', id: nextId(), text: fullText, tools: [...tools] },
+        ]);
+      }
+      if (fullText.trim()) {
+        setChatHistory((prev) => {
+          const next = [...prev, { role: 'assistant' as const, content: fullText }];
+          chatHistoryRef.current = next;
+          return next;
+        });
+      }
       clearLive();
     },
     [requestPermission, sessionId],
@@ -1075,6 +1092,16 @@ export function App({
   const { cols, rows } = termSize;
   const thinkingPhrase = useThinkingPhrase(isLoading);
 
+  // Live UI (tools + streaming text + queue) must fit above the footer so the
+  // terminal doesn't scroll under the chat — that jitter breaks Ink redraws.
+  const FOOTER_RESERVE = 7;
+  const liveCap = Math.max(4, rows - FOOTER_RESERVE);
+  const queueLines =
+    queueEntries.length > 0 ? Math.min(4, 1 + Math.min(3, queueEntries.length) + (queueEntries.length > 3 ? 1 : 0)) : 0;
+  const toolCap = Math.min(5, Math.max(2, Math.floor((liveCap - queueLines) / 2)));
+  const textCap = Math.max(2, liveCap - toolCap - queueLines);
+  const displayLiveText = clipToLastLines(liveText, textCap);
+
   if (showModelWizard) {
     return (
       <Box flexDirection="column">
@@ -1112,16 +1139,24 @@ export function App({
 
       {showBanner && !isLoading && <Banner />}
 
-      {isLoading && <LiveArea tools={streamTools} subagents={streamSubagents} rows={rows} />}
+      {isLoading && (
+        <LiveArea
+          tools={streamTools}
+          subagents={streamSubagents}
+          dispatchCount={subagentDispatchCount}
+          maxLines={toolCap}
+          spinnerFrame={spinnerFrame}
+        />
+      )}
 
-      {isLoading && liveText ? (
-        <Box paddingLeft={2} paddingRight={2} width={cols}>
+      {isLoading && displayLiveText ? (
+        <Box paddingLeft={2} paddingRight={2} width={cols} flexShrink={0}>
           <Box flexShrink={0}>
             <Text dimColor>maniac  </Text>
           </Box>
           <Box flexGrow={1} flexShrink={1}>
             <Text>
-              {renderMarkdown(liveText)}
+              {renderMarkdown(displayLiveText)}
               {cursorVisible ? <Text color={ACCENT}>▌</Text> : <Text> </Text>}
             </Text>
           </Box>

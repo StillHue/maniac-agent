@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import type { QueueEntry } from '@maniac/engine';
 import { ACCENT } from '../theme.js';
 
-const MAX_VISIBLE = 5;
+const MAX_VISIBLE = 3;
 const PREVIEW_LEN = 72;
 
 function preview(text: string): string {

@@ -61,7 +61,15 @@ export function formatToolArgs(tool: string, args: unknown): string {
   return raw.length > 70 ? raw.slice(0, 67) + '…' : raw;
 }
 
-export function ToolLine({ tc, showOutput }: { tc: ToolCallView; showOutput?: boolean }) {
+export function ToolLine({
+  tc,
+  showOutput,
+  spinnerFrame,
+}: {
+  tc: ToolCallView;
+  showOutput?: boolean;
+  spinnerFrame?: string;
+}) {
   const verb = toolVerb(tc.tool, tc.done);
   const label = formatToolArgs(tc.tool, tc.args);
   return (
@@ -74,7 +82,7 @@ export function ToolLine({ tc, showOutput }: { tc: ToolCallView; showOutput?: bo
               {tc.success ? '✓' : '✗'}
             </Text>
           ) : (
-            <Text color={ACCENT}>✻</Text>
+            <Text color={ACCENT}>{spinnerFrame || '⠋'}</Text>
           )}
           {'  '}
           <Text dimColor={tc.done}>{verb}</Text>
