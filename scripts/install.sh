@@ -1,10 +1,10 @@
 #!/bin/sh
 # Maniac Agent — macOS/Linux installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/maniac-agent/main/scripts/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.sh | sh
 
 set -e
 
-REPO="https://github.com/YOUR_ORG/maniac-agent.git"
+REPO="https://github.com/StillHue/maniac-agent.git"
 INSTALL="$HOME/.maniac"
 BIN_DIR="$HOME/.local/bin"
 

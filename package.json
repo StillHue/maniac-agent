@@ -2,6 +2,18 @@
   "name": "maniac-agent",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StillHue/maniac-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/StillHue/maniac-agent/issues"
+  },
+  "homepage": "https://github.com/StillHue/maniac-agent#readme",
+  "engines": {
+    "node": ">=18"
+  },
   "workspaces": [
     "apps/*",
     "services/*",
