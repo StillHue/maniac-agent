@@ -156,16 +156,20 @@ function InfoRow({ label, value, width }: { label: string; value: string; width:
 export function Banner() {
   const cols = process.stdout.columns || 80;
   const showScene = cols >= SCENE_WIDTH + 4;
-  const scenePad = Math.max(0, Math.floor((cols - SCENE_WIDTH) / 2));
+  // Left-aligned layout: everything anchors at the chat's left padding,
+  // and the tagline centers under the scene art (not the terminal).
+  const basePad = 2;
+  const scenePad = basePad;
 
   const panelWidth = Math.min(Math.max(SCENE_WIDTH, 56), cols - 4);
-  const panelPad = Math.max(0, Math.floor((cols - panelWidth) / 2));
+  const panelPad = basePad;
   const innerWidth = panelWidth - 2;
 
   const info = resolveSessionInfo();
   const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
   const tagline = "the 'what the hell, let's try it' agent";
-  const tagPad = Math.max(0, Math.floor((cols - tagline.length - 4) / 2));
+  const tagWidth = showScene ? SCENE_WIDTH : panelWidth;
+  const tagPad = basePad + Math.max(0, Math.floor((tagWidth - tagline.length - 4) / 2));
 
   const leftDots = '·'.repeat(PINS_START);
   const rightDots = '·'.repeat(Math.max(0, SCENE_WIDTH - PINS_START - PINS.length));

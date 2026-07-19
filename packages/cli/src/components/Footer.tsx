@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import type { GitInfo } from '../cli-config.js';
 import type { PermissionMode } from '@maniac/engine';
+import { ACCENT } from '../theme.js';
 
 export function Footer({
   git,
@@ -15,7 +16,7 @@ export function Footer({
   isLoading,
   spinnerFrame,
   thinkingPhrase,
-  reasoningText,
+  elapsedSec,
   activeModel,
   queueSize,
   sessionId,
@@ -31,7 +32,7 @@ export function Footer({
   isLoading: boolean;
   spinnerFrame: string;
   thinkingPhrase: string;
-  reasoningText: string;
+  elapsedSec: number;
   activeModel: string;
   queueSize: number;
   sessionId?: string;
@@ -46,27 +47,33 @@ export function Footer({
   ].filter(Boolean);
   const leftStatus = leftParts.join('  ·  ');
   const rightStatus = `● ${activeModel}`;
-  const gap = Math.max(1, cols - 2 - leftStatus.length - rightStatus.length);
-
-  const maxReasoningWidth = Math.max(20, cols - 8);
-  const liveText = reasoningText
-    ? reasoningText.replace(/\s+/g, ' ').trim().slice(-maxReasoningWidth)
-    : '';
-  const displayText = isLoading ? liveText || `${spinnerFrame} ${thinkingPhrase}` : '';
+  // Account for the box's horizontal padding (2 + 2), otherwise the right
+  // status overflows and wraps to the next line.
+  const gap = Math.max(1, cols - 4 - leftStatus.length - rightStatus.length);
 
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Text dimColor>{'─'.repeat(cols)}</Text>
 
       <Box paddingLeft={2} paddingTop={1} paddingBottom={1}>
-        <Text dimColor>{isLoading ? '  ' : '> '}</Text>
         {isLoading ? (
-          <Text dimColor>{displayText}</Text>
-        ) : (
           <Text>
-            {value}
-            {cursorVisible ? <Text color="white">█</Text> : <Text> </Text>}
+            {/* Fixed-width slot for the pulse glyph: these asterisks have
+                inconsistent widths in some fonts, which causes jitter. */}
+            <Text color={ACCENT}>{spinnerFrame}</Text>
+            <Text> {thinkingPhrase}</Text>
+            <Text dimColor>
+              {'  '}({elapsedSec}s · esc to interrupt)
+            </Text>
           </Text>
+        ) : (
+          <>
+            <Text dimColor>{'> '}</Text>
+            <Text>
+              {value}
+              {cursorVisible ? <Text color="white">█</Text> : <Text> </Text>}
+            </Text>
+          </>
         )}
       </Box>
 

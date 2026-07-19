@@ -1,13 +1,10 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { Banner } from './Banner.js';
 import { ToolLine } from './ToolLine.js';
 import { renderMarkdown } from '../markdown.js';
 import type { StaticItem } from '../ui-types.js';
 
 export function MessageItem({ item }: { item: StaticItem }) {
-  if (item.type === 'banner') return <Banner />;
-
   if (item.type === 'user') {
     return (
       <Box paddingLeft={2} paddingRight={2} marginBottom={1}>

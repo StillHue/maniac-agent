@@ -16,7 +16,6 @@ export interface SubagentStatus {
 }
 
 export type StaticItem =
-  | { type: 'banner' }
   | { type: 'user'; id: number; text: string }
   | { type: 'assistant'; id: number; text: string; tools: ToolCallView[] }
   | { type: 'system'; id: number; text: string; variant: 'info' | 'error' | 'success' | 'warn' };
