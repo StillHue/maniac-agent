@@ -1,12 +1,19 @@
 # maniac
 
-**The "what the hell, let's try it" agent for your maniac ideas.**
+<p align="center">
+  <img src="docs/assets/maniac-mascot-wave.png" alt="Maniac chip mascot waving goodbye" width="220" />
+</p>
+
+<p align="center">
+  <strong>The "what the hell, let's try it" agent for your maniac ideas.</strong><br />
+  <em>chipzinho dando tchauzinho ⚡</em>
+</p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#status)
 
-Maniac is an open source autonomous AI agent that runs on your machine. You give it a goal, it figures out how to get there — running tools, writing code, browsing files, calling APIs, talking to you on Telegram. It remembers what it learns, builds skills over time, and can modify its own source when it finds a better way to do something.
+Maniac is an open source autonomous AI agent that runs on your machine. You give it a goal, it figures out how to get there — running tools, writing code, browsing files, making SSRF-safe HTTP requests, and talking to you on Telegram. It remembers what it learns, drafts skill/self-improvement **proposals** over time (apply only with explicit approval), and can modify its own source when you authorize it.
 
 It is not a chatbot. It is not a coding assistant. It is the agent you spin up when you have an idea that sounds insane and you want to see if it actually works.
 
@@ -76,12 +83,14 @@ In the TUI: **Shift+Tab** cycles chat/ask/plan; **Ctrl+T** cycles permission mod
 
 - **Runs autonomously** — give it a goal, it loops: thinks → picks tools → executes → reflects → repeats until done
 - **Persistent memory** — remembers facts, preferences, and project context across sessions in `~/.maniac/`
-- **Skills** — reusable procedures the agent can load, create, and improve over time
-- **Subagent delegation** — breaks big tasks into parallel subtasks
-- **Crash recovery** — saves checkpoints before every critical operation, resumes after restart
+- **Skills & proposals** — reusable procedures the agent can load/create; background autonomy only **drafts** improvement proposals (`/proposals`, `/approve <id>`) — it never silently mutates source, skills, or archives
+- **Subagent delegation** — consecutive `[TOOL:delegate]` calls run in parallel (bounded, default 3, max 8), sharing cwd/permissions/cancellation
+- **Crash recovery** — checkpoint v2 with per-tool ledger; on restart, safe read tools auto-replay and mutating tools ask for confirmation (`--no-auto-resume` to skip)
+- **HTTP requests** — first-class `http_request` tool with SSRF protection (blocks private/link-local/metadata), redirect re-checks, timeouts, and `${ENV:MANIAC_HTTP_SECRET_*}` header refs (never raw API keys)
+- **Provider routing** — switch providers in natural language (`use groq`, `usa anthropic`, `/model`) with correct key hydration per provider
 - **MCP support** — connect any MCP server (Obsidian, GitHub, databases, browsers, etc.)
-- **Self-modifying** — the agent can edit its own source code and rebuild
-- **Telegram** — talk to your agent from your phone
+- **Self-modifying (gated)** — `source_edit` / rebuild require permission; background jobs cannot apply source proposals
+- **Telegram** — bidirectional bot (`maniac telegram`) with allowlist, per-chat sessions, progress edits, and inline Approve/Reject for dangerous tools
 
 ---
 
@@ -91,7 +100,7 @@ In the TUI: **Shift+Tab** cycles chat/ask/plan; **Ctrl+T** cycles permission mod
 |---|---|---|
 | **CLI** | `maniac` | Full-screen terminal UI (installed globally, or `yarn build:cli` from a clone) |
 | **Web** | `yarn dev` (from a clone) | Browser UI at `http://localhost:3000` |
-| **Telegram** | set `TELEGRAM_BOT_TOKEN` | Chat with your agent from anywhere |
+| **Telegram** | `maniac telegram` | Bidirectional bot — requires `TELEGRAM_BOT_TOKEN` + allowlist |
 
 ---
 
@@ -152,7 +161,11 @@ Copy `.env.example` to `.env` and fill in what you need. All values are optional
 | `TOGETHER_API_KEY` | — | Together AI |
 | `NVIDIA_API_KEY` | — | NVIDIA NIM |
 | `OPENCODE_API_KEY` | — | OpenCode |
-| `TELEGRAM_BOT_TOKEN` | — | Telegram bot |
+| `TELEGRAM_BOT_TOKEN` | — | Telegram Bot API token |
+| `TELEGRAM_ALLOWED_USER_IDS` | — | Comma-separated numeric user ids (required unless usernames/allow-all) |
+| `TELEGRAM_ALLOWED_USERNAMES` | — | Comma-separated usernames (without `@`) |
+| `TELEGRAM_ALLOW_ALL` | — | Set to `1` only for open bots (not recommended) |
+| `MANIAC_NO_AUTO_RESUME` | — | Set to `1` to skip crash auto-resume on engine server |
 | `MANIAC_MEMORY_DIR` | `~/.maniac/memory` | Where memory is stored |
 | `MANIAC_BRAIN_VAULT` | — | Obsidian vault path (optional) |
 | `MCP_CONFIG_PATH` | — | Path to MCP config JSON |

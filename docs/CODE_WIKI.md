@@ -33,7 +33,7 @@ Ele usa `src/router.ts` para decidir entre provedores, e `src/llm.ts` para chama
 
 - `ChatMessage`
 - `EngineMode`
-- `StreamEvent`
+- `StreamEvent` (inclui `subagent_start|token|tool|done`)
 - `ChatRequest`
 - `ChatResponse`
 
@@ -43,20 +43,30 @@ Ele usa `src/router.ts` para decidir entre provedores, e `src/llm.ts` para chama
 - `cleanCodePrompt`
 - `deepSearchPrompt`
 
+## Engine — capacidades verificadas
+
+| Modulo | Papel |
+|---|---|
+| `provider-switch.ts` | Troca de provider NL + hidratação de chave |
+| `http/ssrf.ts` + `http/tools-http.ts` | `http_request` com proteção SSRF |
+| `telegram/` | Bot bidirecional, allowlist, sessões, approvals inline |
+| `concurrency.ts` + `delegation.ts` | Subagentes em paralelo (cap 1–8) |
+| `immortality.ts` + `resume.ts` + `run-lock.ts` | Checkpoint v2, resume seguro, lock de run |
+| `autonomy.ts` + `proposals/` | Autonomia proposal-only; apply via `/approve` |
+| `curator.ts` | Em proposal-only: dry-run; archive só após approve |
+
 ## Scripts
 
 - `yarn dev`: inicia o Next.js em `apps/web`.
 - `yarn build:all`: compila types → prompts → engine → web.
-- `yarn dev:service`: inicia o servico Express em modo watch.
 - `yarn build:cli`: compila a CLI.
+- `npx vitest run --dir packages/engine/test`: testes do engine.
 
 ## Ambiente
 
-- `GROQ_API_KEY`: provider Llama/Groq.
-- `GEMINI_API_KEY`: provider Gemini.
-- `OPENAI_API_KEY`: provider OpenAI.
-- `OPENCODE_API_KEY`: provider OpenCode/north.
-- `TELEGRAM_BOT_TOKEN`: bot Telegram.
+- Provider keys: ver `.env.example` / README.
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USER_IDS` / `TELEGRAM_ALLOWED_USERNAMES` para `maniac telegram`.
+- `MANIAC_NO_AUTO_RESUME=1` para desligar auto-resume no server.
 - `MANIAC_MEMORY_DIR`: diretório de memória (padrão: `~/.maniac/memory`).
 - `MANIAC_BRAIN_VAULT`: vault Obsidian (opcional).
 - `PORT`: porta do maniac-agent-service. Padrão: `3001`.
