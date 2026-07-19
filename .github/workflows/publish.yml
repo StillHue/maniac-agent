@@ -1,0 +1,50 @@
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on origin/main
+        run: |
+          set -e
+          git fetch origin main
+          TAG_SHA="$(git rev-parse "$GITHUB_REF_NAME")"
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME ($TAG_SHA) is not on origin/main — refusing to publish"
+            exit 1
+          fi
+          echo "OK: $GITHUB_REF_NAME is reachable from origin/main"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: yarn install --frozen-lockfile
+
+      - name: Build
+        run: |
+          yarn build:all
+          yarn build:cli
+
+      - name: Pack maniac-agent
+        run: node scripts/pack-npm.mjs
+
+      - name: Publish to npm
+        working-directory: dist-npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -27,9 +27,12 @@
     "build:service": "yarn workspace maniac-agent-service build",
     "dev:service": "yarn workspace maniac-agent-service dev",
     "deploy:ec2": "node scripts/deploy-ec2.mjs",
+    "pack:npm": "node scripts/pack-npm.mjs",
+    "release": "node scripts/release.mjs",
     "test": "vitest run"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "vitest": "^4.1.10"
   },
   "resolutions": {
