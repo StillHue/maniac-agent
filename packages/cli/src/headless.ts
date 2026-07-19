@@ -1,0 +1,122 @@
+import {
+  defaultHarness,
+  type PermissionMode,
+  type PermissionPromptDecision,
+} from '@maniac/engine';
+import type { ChatMessage, EngineMode, StreamEvent } from '@maniac/types';
+
+export interface HeadlessOptions {
+  prompt: string;
+  mode?: EngineMode;
+  permissionMode?: PermissionMode;
+  history?: ChatMessage[];
+  sessionId?: string;
+  /** When true, auto-approve all permission asks (like --yolo / bypass). */
+  yolo?: boolean;
+  cwd?: string;
+}
+
+/** Project StreamEvent → compact NDJSON lines for scripting/CI. */
+export function projectNdjson(event: StreamEvent): Record<string, unknown> | null {
+  switch (event.type) {
+    case 'token':
+      return { type: 'text', content: event.content };
+    case 'reasoning':
+      return { type: 'thought', content: event.content };
+    case 'tool_start':
+      return { type: 'tool_start', tool: event.tool, args: event.args };
+    case 'tool_output':
+      return { type: 'tool_output', tool: event.tool, chunk: event.chunk };
+    case 'tool_result':
+      return {
+        type: 'tool_result',
+        tool: event.tool,
+        success: event.success,
+        output: event.output,
+      };
+    case 'permission_request':
+      return {
+        type: 'permission_request',
+        id: event.id,
+        tool: event.tool,
+        args: event.args,
+        reason: event.reason,
+      };
+    case 'permission_decision':
+      return { type: 'permission_decision', id: event.id, decision: event.decision };
+    case 'session':
+      return { type: 'session', sessionId: event.sessionId };
+    case 'error':
+      return { type: 'error', message: event.message };
+    case 'done':
+      return { type: 'end' };
+    case 'mode':
+      return { type: 'mode', mode: event.mode };
+    case 'permission_mode':
+      return { type: 'permission_mode', mode: event.mode };
+    case 'compact':
+      return { type: 'compact', summary: event.summary };
+    default:
+      return null;
+  }
+}
+
+export async function runHeadless(opts: HeadlessOptions): Promise<string> {
+  const permissionMode: PermissionMode = opts.yolo
+    ? 'bypassPermissions'
+    : opts.permissionMode || 'dontAsk';
+
+  return defaultHarness.run({
+    message: opts.prompt,
+    mode: opts.mode || 'chat',
+    history: opts.history,
+    repoPath: opts.cwd || process.cwd(),
+    permissionMode,
+    sessionId: opts.sessionId,
+    onPermissionRequest: async (): Promise<PermissionPromptDecision> => {
+      if (opts.yolo) return 'allow';
+      return 'deny';
+    },
+    onEvent: (event) => {
+      const line = projectNdjson(event);
+      if (line) process.stdout.write(JSON.stringify(line) + '\n');
+    },
+  });
+}
+
+export function parseCliArgs(argv: string[]): {
+  headless: boolean;
+  prompt?: string;
+  yolo: boolean;
+  resume?: string;
+  continueLatest: boolean;
+  help: boolean;
+} {
+  const args = argv.slice(2);
+  let headless = false;
+  let prompt: string | undefined;
+  let yolo = false;
+  let resume: string | undefined;
+  let continueLatest = false;
+  let help = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-p' || a === '--print' || a === '--prompt') {
+      headless = true;
+      prompt = args[++i];
+    } else if (a === '--yolo' || a === '--dangerously-skip-permissions') {
+      yolo = true;
+    } else if (a === '-r' || a === '--resume') {
+      resume = args[++i] || '';
+    } else if (a === '-c' || a === '--continue') {
+      continueLatest = true;
+    } else if (a === '-h' || a === '--help') {
+      help = true;
+    } else if (!a.startsWith('-') && !prompt) {
+      // bare prompt implies headless when combined with -p already handled
+    }
+  }
+
+  return { headless, prompt, yolo, resume, continueLatest, help };
+}

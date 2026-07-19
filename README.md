@@ -1,14 +1,45 @@
 # maniac
 
-**the what the hell agent for your maniac ideas**
+**The "what the hell, let's try it" agent for your maniac ideas.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml)
+[![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#status)
 
 Maniac is an open source autonomous AI agent that runs on your machine. You give it a goal, it figures out how to get there — running tools, writing code, browsing files, calling APIs, talking to you on Telegram. It remembers what it learns, builds skills over time, and can modify its own source when it finds a better way to do something.
 
 It is not a chatbot. It is not a coding assistant. It is the agent you spin up when you have an idea that sounds insane and you want to see if it actually works.
 
+> [!WARNING]
+> Maniac runs shell commands, writes files, and can modify and rebuild its own source code. Run it in an environment you trust — ideally a sandbox or VM — and review what it does before pointing it at anything important. See [SECURITY.md](SECURITY.md).
+
+---
+
+## Contents
+
+- [Status](#status)
+- [Install](#install)
+- [What it does](#what-it-does)
+- [Interfaces](#interfaces)
+- [Quick start (manual)](#quick-start-manual)
+- [Providers](#providers)
+- [Environment variables](#environment-variables)
+- [Project structure](#project-structure)
+- [Build](#build)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Status
+
+Maniac is **experimental** (`v0.1.0`). Expect rough edges, breaking changes, and behavior that surprises you — that is part of the point. Feedback and contributions are very welcome.
+
 ---
 
 ## Install
+
+Requires **Node.js 18+**, **Git**, and **Yarn** (the installer sets up Yarn for you if missing).
 
 **Windows**
 ```powershell
@@ -20,11 +51,24 @@ irm https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install
 curl -fsSL https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.sh | sh
 ```
 
-Then add your API key to `~/.maniac/maniac-agent/.env` and run:
+The installer clones Maniac into `~/.maniac/maniac-agent`, builds it, and adds a `maniac` command to your PATH. Then add at least one API key to `~/.maniac/maniac-agent/.env` (`GROQ_API_KEY` has a free tier) and run:
 
 ```sh
 maniac
 ```
+
+**Headless / scripting**
+
+```sh
+maniac -p "summarize this repo"           # NDJSON stream on stdout
+maniac -p "run tests" --yolo              # auto-approve tool calls
+maniac --continue                         # resume latest session (TUI)
+maniac --resume <session-id>
+```
+
+In the TUI: **Shift+Tab** cycles chat/ask/plan; **Ctrl+T** cycles permission modes; dangerous tools prompt for approval in `default` mode. See `/help`.
+
+> The one-line install gives you the **CLI**. The **web UI** and **Telegram** interfaces run from a manual clone — see [Quick start](#quick-start-manual).
 
 ---
 
@@ -45,9 +89,9 @@ maniac
 
 | Interface | How to run | Description |
 |---|---|---|
-| **CLI** | `maniac` | Full-screen terminal UI |
-| **Web** | `yarn dev` | Browser UI at `localhost:3000` |
-| **Telegram** | set `TELEGRAM_BOT_TOKEN` | Chat from anywhere |
+| **CLI** | `maniac` | Full-screen terminal UI (installed globally, or `yarn build:cli` from a clone) |
+| **Web** | `yarn dev` (from a clone) | Browser UI at `http://localhost:3000` |
+| **Telegram** | set `TELEGRAM_BOT_TOKEN` | Chat with your agent from anywhere |
 
 ---
 
@@ -72,34 +116,51 @@ maniac
 
 ## Providers
 
-Maniac works with any of these — add the key for at least one:
+Maniac works with any of the providers below — add the key for **at least one**. You can also switch at runtime by telling the agent `use groq`, `use anthropic`, `use auto`, etc.
 
 | Provider | Env var | Notes |
 |---|---|---|
 | Groq | `GROQ_API_KEY` | Free tier available. Llama models. Good default. |
+| OpenAI | `OPENAI_API_KEY` | GPT-4o, o-series. |
+| Anthropic | `ANTHROPIC_API_KEY` | Claude models. |
 | Google Gemini | `GEMINI_API_KEY` | Long context. |
-| OpenAI | `OPENAI_API_KEY` | GPT-4o, o3. |
-| OpenCode | `OPENCODE_API_KEY` | north models. |
+| OpenRouter | `OPENROUTER_API_KEY` | One key, many models. |
+| Mistral | `MISTRAL_API_KEY` | Mistral / Codestral. |
+| xAI | `XAI_API_KEY` | Grok models. |
+| Together AI | `TOGETHER_API_KEY` | Open-weight models. |
 | NVIDIA NIM | `NVIDIA_API_KEY` | Nemotron. |
-
-Switch provider at runtime: tell the agent `use groq` or `use gemini`.
+| OpenCode | `OPENCODE_API_KEY` | OpenCode Zen models (e.g. `big-pickle`). |
+| Ollama | — | Local models, no key required (`http://localhost:11434`). |
+| Custom | — | Any OpenAI-compatible endpoint. |
+| Auto | — | Built-in router: NVIDIA primary, OpenCode fallback. |
 
 ---
 
 ## Environment variables
 
+Copy `.env.example` to `.env` and fill in what you need. All values are optional except **one** provider key.
+
 | Variable | Default | Description |
 |---|---|---|
 | `GROQ_API_KEY` | — | Groq / Llama |
-| `GEMINI_API_KEY` | — | Google Gemini |
 | `OPENAI_API_KEY` | — | OpenAI |
-| `OPENCODE_API_KEY` | — | OpenCode / north |
+| `ANTHROPIC_API_KEY` | — | Anthropic / Claude |
+| `GEMINI_API_KEY` | — | Google Gemini |
+| `OPENROUTER_API_KEY` | — | OpenRouter |
+| `MISTRAL_API_KEY` | — | Mistral |
+| `XAI_API_KEY` | — | xAI / Grok |
+| `TOGETHER_API_KEY` | — | Together AI |
 | `NVIDIA_API_KEY` | — | NVIDIA NIM |
+| `OPENCODE_API_KEY` | — | OpenCode |
 | `TELEGRAM_BOT_TOKEN` | — | Telegram bot |
 | `MANIAC_MEMORY_DIR` | `~/.maniac/memory` | Where memory is stored |
 | `MANIAC_BRAIN_VAULT` | — | Obsidian vault path (optional) |
 | `MCP_CONFIG_PATH` | — | Path to MCP config JSON |
-| `PORT` | `3001` | Port for the optional router service |
+| `OPENCODE_CONFIG` | — | Alternate OpenCode/MCP config path |
+| `MANIAC_WINDOWS_EXEC_BRIDGE` | — | Optional URL for remote Windows exec bridge |
+| `PORT` | `3001` | Port for the optional router service (`yarn dev:service`) |
+
+> The web UI runs on port **3000** (`yarn dev`); the optional router service runs on **3001** (`PORT`, `yarn dev:service`). They are independent.
 
 ---
 
@@ -118,6 +179,8 @@ services/
 scripts/
   install.ps1               Windows one-line installer
   install.sh                macOS/Linux one-line installer
+docs/
+  CODE_WIKI.md              Architecture & code walkthrough
 ```
 
 ---
@@ -128,10 +191,17 @@ scripts/
 yarn build:all        # types → prompts → engine → web
 yarn build:cli        # CLI
 yarn dev:service      # optional router service (port 3001)
+yarn test             # run the test suite (Vitest)
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and our [Code of Conduct](CODE_OF_CONDUCT.md) before opening an issue or pull request. For security reports, follow [SECURITY.md](SECURITY.md) — do not open a public issue.
 
 ---
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © maniac contributors

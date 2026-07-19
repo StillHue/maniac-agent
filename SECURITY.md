@@ -23,3 +23,13 @@ Instead, report it privately by opening a [GitHub Security Advisory](https://git
 ## Self-modifying behavior
 
 Maniac can modify its own source. When running untrusted goals, run in an isolated environment and review changes the agent makes before committing them.
+
+## Permissions
+
+Interactive CLI sessions use a permission pipeline before dangerous tools run:
+
+- Modes: `default`, `acceptEdits`, `plan`, `dontAsk`, `bypassPermissions`
+- Config: `~/.maniac/permissions.json`
+- Per-project remembered grants: `~/.maniac/grants/`
+- Cycle modes in the TUI with `Ctrl+T`, or `/permissions <mode>`
+- Headless runs default to `dontAsk` unless `--yolo` / `--dangerously-skip-permissions` is set

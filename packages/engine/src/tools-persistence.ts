@@ -6,7 +6,8 @@ const TOOLS_FILE = path.join(__dirname, 'custom-tools.json');
 export function loadCustomTools() {
   try {
     const data = fs.readFileSync(TOOLS_FILE, 'utf8');
-    return JSON.parse(data) || [];
+    const parsed = JSON.parse(data);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }

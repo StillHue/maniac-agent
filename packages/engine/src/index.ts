@@ -1,10 +1,16 @@
 export { runEngine } from './engine';
-export type { EngineRunOptions } from './engine';
+export type { EngineRunOptions, PermissionPromptDecision } from './engine';
+export { defaultHarness } from './harness';
+export type { AgentHarness } from './harness';
 export { callOpenCode, getActiveProvider, setActiveProvider, getProviderHistory } from './opencode';
-export { loadManiacConfig, saveManiacConfig, fetchModels, PROVIDER_DEFS, AUTO_SLOTS } from './config';
+export { loadManiacConfig, saveManiacConfig, fetchModels, PROVIDER_DEFS, AUTO_SLOTS, getConfiguredProviders, hasUsableProvider } from './config';
 export type { ManiacConfig, ProviderDef, AutoRouterSlot } from './config';
 export { registerHook, unregisterHook, listHooks } from './hooks';
 export type { HookPhase, HookContext, HookFn } from './hooks';
+export * from './permissions';
+export * from './session';
+export * from './prompt-queue';
+export * from './tool-registry';
 export * from './tools';
 export * from './router';
 export * from './memory';

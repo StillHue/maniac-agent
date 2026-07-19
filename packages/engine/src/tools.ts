@@ -75,6 +75,7 @@ let customTools: Map<string, RegisteredTool> = new Map();
 // Carrega ferramentas customizadas persistidas do disco
 (function initCustomTools() {
   const persisted = loadCustomTools();
+  if (!Array.isArray(persisted)) return;
   for (const t of persisted) {
     try {
       const handler = new Function('args', 'cwd', t.handler) as (args: string, cwd: string) => ToolOutput;
@@ -287,49 +288,148 @@ export function toolGlob(globPattern: string, searchPath: string | null, cwd: st
   }
 }
 
-export function toolExec(command: string, cwd: string): ToolOutput {
-  const isWin = process.platform === 'win32';
+export interface ExecOptions {
+  /** Cancels the running command (kills the whole process tree). */
+  signal?: AbortSignal;
+  /** Hard limit; the process tree is killed when exceeded. */
+  timeoutMs?: number;
+  /** Receives stdout/stderr chunks as they arrive (for live UI streaming). */
+  onOutput?: (chunk: string) => void;
+}
 
-  // On Windows: PowerShell gives the best cross-compatibility.
-  // Wrap the command so that non-zero exit codes surface as stderr instead of
-  // throwing inside execSync (which loses the real output).
-  let shell: string;
-  let finalCmd: string;
-  if (isWin) {
-    shell = 'powershell.exe';
-    // Run inside powershell with explicit error-action so we capture stderr too
-    finalCmd = command;
-  } else {
-    shell = process.env.SHELL || '/bin/sh';
-    finalCmd = command;
-  }
+const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
+const EXEC_MAX_CAPTURE = 200 * 1024; // stop buffering past this, keep process draining
 
+/** Kills a process and all of its children. */
+function killTree(pid: number): void {
   try {
-    const stdout = execSync(finalCmd, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 5 * 1024 * 1024,
-      timeout: 60000,
-      shell,
-      windowsHide: true,
-    }) as string;
-    return { success: true, output: stdout.trim().slice(0, 4000) };
-  } catch (e: any) {
-    const out = (e.stdout?.trim() || '') + (e.stderr?.trim() ? '\n' + e.stderr.trim() : '');
-    return {
-      success: false,
-      output: (out || e.message).slice(0, 2000),
-    };
+    if (process.platform === 'win32') {
+      execSync(`taskkill /pid ${pid} /T /F`, { windowsHide: true, timeout: 10_000 });
+    } else {
+      process.kill(-pid, 'SIGKILL');
+    }
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {}
   }
 }
 
-const WINDOWS_EXEC_BRIDGE = 'http://100.91.227.9:8081/exec';
+/**
+ * Async shell execution (Grok Build style): spawn instead of execSync so the
+ * event loop — and therefore the TUI — keeps running. Supports cancellation,
+ * timeout with process-tree kill, and live output streaming.
+ */
+export function toolExec(command: string, cwd: string, opts: ExecOptions = {}): Promise<ToolOutput> {
+  const isWin = process.platform === 'win32';
+  const timeoutMs = opts.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS;
+
+  return new Promise((resolve) => {
+    if (opts.signal?.aborted) {
+      resolve({ success: false, output: '[cancelled before start]' });
+      return;
+    }
+
+    const child = isWin
+      ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+          cwd,
+          windowsHide: true,
+        })
+      : spawn(process.env.SHELL || '/bin/sh', ['-c', command], {
+          cwd,
+          detached: true, // own process group so killTree(-pid) reaches children
+        });
+
+    let captured = '';
+    let truncated = false;
+    let settled = false;
+    let timedOut = false;
+    let cancelled = false;
+
+    const onChunk = (data: Buffer) => {
+      const text = data.toString('utf8');
+      if (captured.length < EXEC_MAX_CAPTURE) {
+        captured += text;
+        if (captured.length >= EXEC_MAX_CAPTURE) truncated = true;
+      }
+      try {
+        opts.onOutput?.(text);
+      } catch {}
+    };
+    child.stdout?.on('data', onChunk);
+    child.stderr?.on('data', onChunk);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) killTree(child.pid);
+    }, timeoutMs);
+
+    const onAbort = () => {
+      cancelled = true;
+      if (child.pid) killTree(child.pid);
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+    const finish = (result: ToolOutput) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+
+    child.on('error', (err) => {
+      finish({ success: false, output: err.message.slice(0, 2000) });
+    });
+
+    child.on('close', (code) => {
+      let out = captured.trim();
+      if (truncated) out += '\n[output truncated]';
+      if (cancelled) {
+        finish({ success: false, output: (out + '\n[cancelled by user]').trim().slice(0, 2000) });
+      } else if (timedOut) {
+        finish({
+          success: false,
+          output: (out + `\n[killed: timeout after ${Math.round(timeoutMs / 1000)}s]`).trim().slice(0, 2000),
+        });
+      } else if (code === 0) {
+        finish({ success: true, output: out.slice(0, 4000) });
+      } else {
+        finish({ success: false, output: (out || `exit code ${code}`).slice(0, 2000) });
+      }
+    });
+  });
+}
+
+/** Optional remote Windows exec bridge — set MANIAC_WINDOWS_EXEC_BRIDGE to enable. */
+const WINDOWS_EXEC_BRIDGE = process.env.MANIAC_WINDOWS_EXEC_BRIDGE || '';
+
+function isSafeBridgeUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 export async function toolWindowsExec(command: string): Promise<ToolOutput> {
   try {
     const cmd = command.trim();
     if (!cmd) {
       return { success: false, output: 'comando vazio' };
+    }
+    if (!WINDOWS_EXEC_BRIDGE) {
+      return {
+        success: false,
+        output: 'Windows exec bridge not configured. Set MANIAC_WINDOWS_EXEC_BRIDGE to a URL.',
+      };
+    }
+    if (!isSafeBridgeUrl(WINDOWS_EXEC_BRIDGE)) {
+      return {
+        success: false,
+        output: 'MANIAC_WINDOWS_EXEC_BRIDGE must be an http(s) URL.',
+      };
     }
 
     const res = await fetch(WINDOWS_EXEC_BRIDGE, {
@@ -591,12 +691,10 @@ export function toolSystemPromptEdit(args: string): ToolOutput {
   }
 }
 
-export function toolRebuildEngine(_cwd: string): ToolOutput {
+export async function toolRebuildEngine(_cwd: string): Promise<ToolOutput> {
   try {
     const pkgDir = ENGINE_PKG;
-    const pkgPath = path.join(pkgDir, 'package.json');
-    const buildScript = (fs.existsSync(pkgPath) && JSON.parse(fs.readFileSync(pkgPath, 'utf8')).scripts?.build) || 'tsc';
-    const result = toolExec(`npm run build`, pkgDir);
+    const result = await toolExec(`npm run build`, pkgDir, { timeoutMs: 300_000 });
     if (!result.success) {
       return { success: false, output: `Build falhou:\n${result.output}` };
     }
@@ -890,7 +988,8 @@ export async function toolTelegramListChats(): Promise<ToolOutput> {
 export async function executeToolCall(
   type: string,
   command: string,
-  cwd: string
+  cwd: string,
+  opts: ExecOptions = {},
 ): Promise<ToolOutput> {
   const parts = command.split(/\s+/);
 
@@ -928,7 +1027,7 @@ export async function executeToolCall(
       return toolGlob(gpattern, searchPath, cwd);
     }
     case 'exec':
-      return toolExec(command, cwd);
+      return await toolExec(command, cwd, opts);
     case 'windows_exec':
       return await toolWindowsExec(command);
     case 'brain':

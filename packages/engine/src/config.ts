@@ -211,6 +211,55 @@ export function saveManiacConfig(cfg: ManiacConfig): void {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
 }
 
+/** Maps a config provider id / auto slot provider to its required env var. */
+const PROVIDER_ENV_KEY: Record<string, string> = {
+  groq: 'GROQ_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  mistral: 'MISTRAL_API_KEY',
+  xai: 'XAI_API_KEY',
+  together: 'TOGETHER_API_KEY',
+  nvidia: 'NVIDIA_API_KEY',
+  opencode: 'OPENCODE_API_KEY',
+};
+
+/**
+ * Returns the list of provider ids that have a usable API key available,
+ * either via env var or via a saved config that carries a non-empty key.
+ */
+export function getConfiguredProviders(): string[] {
+  const configured = new Set<string>();
+  for (const [provider, envVar] of Object.entries(PROVIDER_ENV_KEY)) {
+    if (process.env[envVar]) configured.add(provider);
+  }
+  const cfg = loadManiacConfig();
+  if (cfg && cfg.apiKey) configured.add(cfg.provider);
+  if (cfg?.provider === 'auto' && Array.isArray(cfg.autoSlots)) {
+    for (const slot of cfg.autoSlots) {
+      if (slot.apiKey) configured.add(slot.provider);
+    }
+  }
+  return [...configured];
+}
+
+/**
+ * True when there is at least one provider usable right now (env key present
+ * or saved config with a key). When false, the agent will fail with a 401
+ * on the first LLM call.
+ */
+export function hasUsableProvider(): boolean {
+  if (getConfiguredProviders().length > 0) return true;
+  const cfg = loadManiacConfig();
+  if (cfg?.provider === 'ollama' || cfg?.provider === 'custom') return true;
+  if (cfg?.provider === 'auto') {
+    const slots = cfg.autoSlots && cfg.autoSlots.length > 0 ? cfg.autoSlots : AUTO_SLOTS;
+    if (slots.some((s) => s.apiKey || process.env[PROVIDER_ENV_KEY[s.provider] || ''])) return true;
+  }
+  return false;
+}
+
 export async function fetchModels(def: ProviderDef, apiKey: string, customBaseUrl?: string): Promise<string[]> {
   const baseUrl = (customBaseUrl || def.baseUrl).replace(/\/$/, '');
   if (!baseUrl && def.id !== 'custom') throw new Error('Base URL required');

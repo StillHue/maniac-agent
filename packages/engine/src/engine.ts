@@ -16,6 +16,18 @@ import {
   reportCrash, checkResume, cleanImmortalityState,
   immortalitySummary, getImmortalityStatus,
 } from './immortality';
+import {
+  evaluatePermission,
+  loadPermissionConfig,
+  addGrant,
+  type PermissionMode,
+} from './permissions';
+import {
+  appendChatMessage,
+  appendSessionUpdate,
+  createSession,
+  type SessionSummary,
+} from './session';
 
 let MAX_TOOL_ITERATIONS = 50;
 const CWD = (() => {
@@ -38,12 +50,29 @@ export function setMaxToolIterations(n: number): void {
   MAX_TOOL_ITERATIONS = Math.max(5, Math.min(n, 500));
 }
 
+export type PermissionPromptDecision = 'allow' | 'deny' | 'always';
+
 interface EngineRunOptions {
   message: string;
   mode: EngineMode;
   history?: ChatMessage[];
   repoPath?: string;
   onEvent: (event: StreamEvent) => void;
+  /** Interactive permission prompt. Required when evaluate returns `ask`. */
+  onPermissionRequest?: (req: {
+    id: string;
+    tool: string;
+    args: string;
+    reason?: string;
+  }) => Promise<PermissionPromptDecision>;
+  /** Override permission mode for this run (else loaded from ~/.maniac/permissions.json). */
+  permissionMode?: PermissionMode;
+  /** Persist conversation under this session id (creates one if omitted and sessionEnabled). */
+  sessionId?: string;
+  /** When true (default), auto-create/append a session for this cwd. */
+  sessionEnabled?: boolean;
+  /** Cancels the run: stops the tool loop and kills any running exec process. */
+  signal?: AbortSignal;
 }
 
 export type { EngineRunOptions };
@@ -74,8 +103,83 @@ function setupCrashHandlers(): void {
   }
 }
 
+async function authorizeTool(
+  tool: string,
+  args: string,
+  opts: {
+    cwd: string;
+    mode: EngineMode;
+    permissionMode?: PermissionMode;
+    onEvent: (event: StreamEvent) => void;
+    onPermissionRequest?: EngineRunOptions['onPermissionRequest'];
+  },
+): Promise<{ allowed: boolean; message?: string }> {
+  const cfg = loadPermissionConfig();
+  if (opts.permissionMode) cfg.mode = opts.permissionMode;
+
+  const result = evaluatePermission(tool, args, cfg, {
+    cwd: opts.cwd,
+    engineMode: opts.mode,
+  });
+
+  if (result.decision === 'allow') return { allowed: true };
+  if (result.decision === 'deny') {
+    return { allowed: false, message: result.reason || `Permission denied for ${tool}` };
+  }
+
+  // ask
+  const id = `perm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  opts.onEvent({
+    type: 'permission_request',
+    id,
+    tool,
+    args,
+    reason: result.reason,
+  });
+
+  if (!opts.onPermissionRequest) {
+    opts.onEvent({ type: 'permission_decision', id, decision: 'deny' });
+    return {
+      allowed: false,
+      message: `Permission required for ${tool} but no interactive prompt is available (use CLI or set bypassPermissions)`,
+    };
+  }
+
+  const decision = await opts.onPermissionRequest({
+    id,
+    tool,
+    args,
+    reason: result.reason,
+  });
+
+  opts.onEvent({ type: 'permission_decision', id, decision });
+
+  if (decision === 'deny') {
+    return { allowed: false, message: `User denied permission for ${tool}` };
+  }
+  if (decision === 'always') {
+    const tokens = args.trim().split(/\s+/).filter(Boolean).slice(0, 3);
+    // Never store a global grant (empty prefix would match everything).
+    if (tokens.length === 0) {
+      return { allowed: true };
+    }
+    addGrant(opts.cwd, { tool, prefix: tokens.join(' ') });
+  }
+  return { allowed: true };
+}
+
 async function runEngine(options: EngineRunOptions): Promise<string> {
-  const { message, mode, history = [], repoPath, onEvent } = options;
+  const {
+    message,
+    mode,
+    history = [],
+    repoPath,
+    onEvent,
+    onPermissionRequest,
+    permissionMode,
+    sessionEnabled = true,
+    signal,
+  } = options;
 
   if (!sessionInit) {
     startCurator();
@@ -100,7 +204,21 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     sessionInit = true;
   }
 
+  const toolCwd = repoPath || CWD;
+  let session: SessionSummary | null = null;
+  if (sessionEnabled) {
+    if (options.sessionId) {
+      session = { id: options.sessionId, cwd: toolCwd, title: '', createdAt: 0, updatedAt: 0, numMessages: 0 };
+    } else {
+      session = createSession(toolCwd);
+    }
+    onEvent({ type: 'session', sessionId: session.id });
+    appendChatMessage(toolCwd, session.id, { role: 'user', content: message });
+  }
+
+  const permCfg = loadPermissionConfig();
   onEvent({ type: 'mode', mode });
+  onEvent({ type: 'permission_mode', mode: permissionMode || permCfg.mode });
 
   let finalReply = '';
 
@@ -117,6 +235,12 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     const allToolCalls: { type: string; success: boolean }[] = [];
 
   while (toolIter < MAX_TOOL_ITERATIONS) {
+    if (signal?.aborted) {
+      onEvent({ type: 'error', message: 'aborted by user' });
+      onEvent({ type: 'done' });
+      heartbeat('idle');
+      return finalReply;
+    }
     if (shouldCompress(messages, CONTEXT_LIMIT)) {
       messages = compressMessages(messages, CONTEXT_LIMIT);
     }
@@ -155,6 +279,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     heartbeat('busy');
 
     for (const tc of toolCalls) {
+      if (signal?.aborted) break;
       allToolCalls.push({ type: tc.type, success: false });
 
       if (tc.type === 'memory_save') {
@@ -252,30 +377,58 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
       }
 
       if (tc.type.includes('/')) {
+        const auth = await authorizeTool(tc.type, tc.command, {
+          cwd: toolCwd,
+          mode,
+          permissionMode,
+          onEvent,
+          onPermissionRequest,
+        });
+        if (!auth.allowed) {
+          const out = auth.message || 'Permission denied';
+          onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
+          onEvent({ type: 'tool_result', tool: tc.type, success: false, output: out });
+          messages.push({ role: 'user', content: `[RESULTADO MCP ${tc.type}]\n${out}` });
+          continue;
+        }
         onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
         let mcpResult: { success: boolean; output: string };
         if (tc.type === 'brain/save' || tc.type === 'brain/read' || tc.type === 'brain/search') {
           const mappedTool = tc.type === 'brain/save' ? 'obsidian/write_note'
             : tc.type === 'brain/read' ? 'obsidian/read_note'
             : 'obsidian/search_notes';
-          const slashIdx = mappedTool.indexOf('/');
-          const mappedServer = mappedTool.slice(0, slashIdx);
-          const mappedName = mappedTool.slice(slashIdx + 1);
-          mcpResult = await executeMcpTool(mappedServer + '/' + mappedName, tc.command);
+          mcpResult = await executeMcpTool(mappedTool, tc.command);
         } else {
           mcpResult = await executeMcpTool(tc.type, tc.command);
         }
         allToolCalls[allToolCalls.length - 1].success = mcpResult.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: mcpResult.success, output: mcpResult.output });
+        if (session) appendSessionUpdate(toolCwd, session.id, { type: 'tool_result', tool: tc.type, success: mcpResult.success, output: mcpResult.output.slice(0, 500) });
         messages.push({
           role: 'user',
           content: `[RESULTADO MCP ${tc.type}]\n${mcpResult.output}`,
         });
       } else {
-        const toolCwd = repoPath || CWD;
+        const auth = await authorizeTool(tc.type, tc.command, {
+          cwd: toolCwd,
+          mode,
+          permissionMode,
+          onEvent,
+          onPermissionRequest,
+        });
+        if (!auth.allowed) {
+          const out = auth.message || 'Permission denied';
+          onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
+          onEvent({ type: 'tool_result', tool: tc.type, success: false, output: out });
+          messages.push({ role: 'user', content: `[RESULTADO]\n${out}` });
+          continue;
+        }
         onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
         await runHooks('pre', { tool: tc.type, args: tc.command, cwd: toolCwd });
-        const result = await executeToolCall(tc.type, tc.command, toolCwd);
+        const result = await executeToolCall(tc.type, tc.command, toolCwd, {
+          signal,
+          onOutput: (chunk) => onEvent({ type: 'tool_output', tool: tc.type, chunk }),
+        });
         await runHooks('post', { tool: tc.type, args: tc.command, cwd: toolCwd, result });
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({
@@ -284,6 +437,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
           success: result.success,
           output: result.output.slice(0, 4000),
         });
+        if (session) appendSessionUpdate(toolCwd, session.id, { type: 'tool_result', tool: tc.type, success: result.success, output: result.output.slice(0, 500) });
         messages.push({
           role: 'user',
           content: `[RESULTADO]\n${result.output.slice(0, 4000)}`,
@@ -303,6 +457,10 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
   heartbeat('idle');
 
   if (finalReply) {
+    if (session) {
+      appendChatMessage(toolCwd, session.id, { role: 'assistant', content: finalReply });
+      appendSessionUpdate(toolCwd, session.id, { type: 'done' });
+    }
     evaluateMemorySave({
       userMessage: message,
       assistantReply: finalReply,
@@ -345,38 +503,20 @@ async function executeMcpTool(toolKey: string, argsString: string): Promise<{ su
     return { success: false, output: `Falha ao analisar args MCP: ${argsString}` };
   }
 
-  const opencodePaths = [
-    'C:\\Users\\gabdr\\.config\\opencode\\opencode.jsonc',
-    'C:\\Users\\gabdr\\.config\\opencode\\opencode.json',
-  ];
-  for (const p of opencodePaths) {
+  const home = require('os').homedir();
+  const candidatePaths = [
+    process.env.MCP_CONFIG_PATH || '',
+    process.env.OPENCODE_CONFIG || '',
+    path.join(home, '.config', 'opencode', 'opencode.jsonc'),
+    path.join(home, '.config', 'opencode', 'opencode.json'),
+    path.join(home, '.gemini', 'config', 'mcp_config.json'),
+    path.join(home, '.maniac', 'mcp.json'),
+  ].filter(Boolean);
+
+  for (const p of candidatePaths) {
     try {
       const raw = require('fs').readFileSync(p, 'utf8');
       const data = JSON.parse(raw.replace(/\/\/.*$/gm, ''));
-      if (data.mcp?.[serverName]) {
-        return await callMcpServer(data.mcp[serverName], toolName, args);
-      }
-    } catch {}
-  }
-
-  const geminiPaths = [
-    'C:\\Users\\gabdr\\.gemini\\config\\mcp_config.json',
-    'C:\\Users\\gabdr\\Pedro\\mcp_config.local.json',
-  ];
-  for (const p of geminiPaths) {
-    try {
-      const data = JSON.parse(require('fs').readFileSync(p, 'utf8'));
-      const server = data.mcpServers?.[serverName];
-      if (server) {
-        return await callMcpServer(server, toolName, args);
-      }
-    } catch {}
-  }
-
-  const mcpConfigPath = process.env.MCP_CONFIG_PATH || '';
-  if (mcpConfigPath) {
-    try {
-      const data = JSON.parse(require('fs').readFileSync(mcpConfigPath, 'utf8'));
       const server = data.mcpServers?.[serverName] || data.mcp?.[serverName];
       if (server) return await callMcpServer(server, toolName, args);
     } catch {}
