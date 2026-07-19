@@ -45,6 +45,24 @@ Maniac is **experimental** (`v0.1.0`). Expect rough edges, breaking changes, and
 
 ## Install
 
+### npm or bun (recommended)
+
+```sh
+npm install -g maniac-agent
+# or
+bun install -g maniac-agent
+```
+
+Then add at least one API key (see [Environment variables](#environment-variables)) — e.g. create `~/.maniac/maniac-agent/.env` or export `OPENCODE_API_KEY` / `GROQ_API_KEY` — and run:
+
+```sh
+maniac
+```
+
+Publishing: push a version tag (`v0.2.0`). GitHub Actions builds a bundled `maniac-agent` package and publishes it to the npm registry (bun installs from the same registry). Maintainers: `yarn release patch` (or `minor` / `major` / `0.2.0`), then `git push origin HEAD --tags`. Requires the `NPM_TOKEN` repository secret.
+
+### One-line installer (clones from GitHub)
+
 Requires **Node.js 18+**, **Git**, and **Yarn** (the installer sets up Yarn for you if missing).
 
 **Windows**
