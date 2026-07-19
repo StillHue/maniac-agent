@@ -1,0 +1,103 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.pnp.*
+
+# ─── Environment ─────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Build outputs ───────────────────────────────────────────────────────────
+dist/
+build/
+out/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# ─── TypeScript ──────────────────────────────────────────────────────────────
+*.js.map
+*.d.ts.map
+
+# ─── Cache ───────────────────────────────────────────────────────────────────
+.cache/
+.eslintcache
+.parcel-cache/
+.swc/
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ─── Runtime / PIDs ──────────────────────────────────────────────────────────
+*.pid
+*.pid.lock
+*.seed
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ─── IDE & AI tools ──────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+*~
+.cursor/
+.claude/
+.agents/
+.kiro/
+.qwen/
+.windsurf/
+.gemini/
+.mcp.json
+.copilot/
+.continue/
+CLAUDE.md
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+
+# ─── Python (services) ───────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+.dockerignore
+
+# ─── Vercel ──────────────────────────────────────────────────────────────────
+.vercel/
+
+# ─── Maniac runtime files ────────────────────────────────────────────────────
+# These live in ~/.maniac/ and should never be committed
+*.maniac.pid
+audit.log
+

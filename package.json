@@ -1,0 +1,23 @@
+{
+  "name": "maniac-agent",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "yarn workspace maniac-web dev",
+    "build:all": "yarn workspace @maniac/types build && yarn workspace @maniac/prompts build && yarn workspace @maniac/engine build && yarn workspace maniac-web build",
+    "build": "yarn build:all",
+    "build:cli": "yarn workspace @maniac/cli build",
+    "build:service": "yarn workspace maniac-agent-service build",
+    "dev:service": "yarn workspace maniac-agent-service dev",
+    "deploy:ec2": "node scripts/deploy-ec2.mjs",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
+  }
+}
