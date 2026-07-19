@@ -7,15 +7,20 @@ import { saveMemory, saveUserProfile, readMemory } from './memory';
 import { listSkills, viewSkill, createSkill } from './skills';
 import { evaluateMemorySave } from './review';
 import { shouldCompress, compressMessages } from './compressor';
-import { delegateTask, waitForDelegation } from './delegation';
+import { delegateTask, waitForDelegation, getMaxSubagentConcurrency } from './delegation';
+import { runPool } from './concurrency';
 import { runCurator, getCuratorStatus, startCurator, stopCurator } from './curator';
-import { touchLastActivity } from './proactive';
+import { touchLastActivity, enqueueProactiveMessage, proactivePulse } from './proactive';
 import { runHooks, registerHook } from './hooks';
 import {
-  saveCheckpoint, clearCheckpoint, heartbeat,
+  saveCheckpoint, clearCheckpoint, heartbeat, loadCheckpoint,
   reportCrash, checkResume, cleanImmortalityState,
   immortalitySummary, getImmortalityStatus,
 } from './immortality';
+import { toolFingerprint } from './resume';
+import { acquireRunLock, releaseRunLock } from './run-lock';
+import { loadAutonomyConfig } from './autonomy';
+import { detectAndEnqueueProposals } from './proposals';
 import {
   evaluatePermission,
   loadPermissionConfig,
@@ -28,6 +33,7 @@ import {
   createSession,
   type SessionSummary,
 } from './session';
+import { describeImages, buildVisionAugmentedMessage, getVisionModelLabel } from './vision';
 
 let MAX_TOOL_ITERATIONS = 50;
 const CWD = (() => {
@@ -73,6 +79,12 @@ interface EngineRunOptions {
   sessionEnabled?: boolean;
   /** Cancels the run: stops the tool loop and kills any running exec process. */
   signal?: AbortSignal;
+  /**
+   * Absolute paths of images attached to this message. They are described by
+   * the Groq vision model and the descriptions are injected into the prompt,
+   * so text-only code models (NVIDIA/OpenCode) can work with them.
+   */
+  images?: string[];
 }
 
 export type { EngineRunOptions };
@@ -170,7 +182,6 @@ async function authorizeTool(
 
 async function runEngine(options: EngineRunOptions): Promise<string> {
   const {
-    message,
     mode,
     history = [],
     repoPath,
@@ -179,7 +190,31 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     permissionMode,
     sessionEnabled = true,
     signal,
+    images = [],
   } = options;
+  let message = options.message;
+
+  // ── Vision routing: describe attached images via Groq, inject text back ──
+  if (images.length > 0) {
+    const visionModel = getVisionModelLabel();
+    onEvent({ type: 'tool_start', tool: 'vision', args: `${images.length} image(s) → ${visionModel}` });
+    try {
+      const descriptions = await describeImages(images, message);
+      message = buildVisionAugmentedMessage(message, descriptions);
+      const failed = descriptions.filter(d => d.description.startsWith('[falha')).length;
+      onEvent({
+        type: 'tool_result',
+        tool: 'vision',
+        success: failed === 0,
+        output: descriptions
+          .map((d, i) => `[image${i + 1}] ${d.description.slice(0, 120)}${d.description.length > 120 ? '…' : ''}`)
+          .join('\n'),
+      });
+    } catch (e: any) {
+      onEvent({ type: 'tool_result', tool: 'vision', success: false, output: e.message });
+      message += `\n\n[NOTA: ${images.length} imagem(ns) anexada(s), mas o modelo de visao falhou: ${e.message}]`;
+    }
+  }
 
   if (!sessionInit) {
     startCurator();
@@ -188,7 +223,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     setInterval(() => heartbeat('idle'), 15000);
 
     // Built-in audit hook: log destructive tool calls to ~/.maniac/audit.log
-    const AUDIT_TOOLS = new Set(['write', 'edit', 'exec', 'source_edit', 'rebuild_engine', 'self_restart']);
+    const AUDIT_TOOLS = new Set(['write', 'edit', 'exec', 'source_edit', 'rebuild_engine', 'self_restart', 'proposal_apply']);
     const auditPath = require('path').join(require('os').homedir(), '.maniac', 'audit.log');
     const { appendFileSync, mkdirSync } = require('fs');
     registerHook('*', 'post', (ctx) => {
@@ -200,6 +235,24 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         appendFileSync(auditPath, line);
       } catch {}
     });
+
+    // Proposal-only autonomy: detect opportunities; never apply in background
+    const autoCfg = loadAutonomyConfig();
+    setInterval(() => {
+      try {
+        const props = detectAndEnqueueProposals();
+        if (props.length) {
+          enqueueProactiveMessage(
+            `New improvement proposals (${props.length}): ${props.map((p) => p.id).join(', ')}. Review with /proposals or approve with /approve <id>.`,
+          );
+        }
+      } catch {}
+    }, autoCfg.proposalIntervalMs);
+    setInterval(() => {
+      void proactivePulse().then((t) => {
+        if (t) enqueueProactiveMessage(t);
+      });
+    }, 30 * 60 * 1000);
 
     sessionInit = true;
   }
@@ -221,6 +274,8 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
   onEvent({ type: 'permission_mode', mode: permissionMode || permCfg.mode });
 
   let finalReply = '';
+  const runId = `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const runLock = acquireRunLock(toolCwd, runId);
 
   try {
     const systemPrompt = getSystemPrompt(mode, repoPath);
@@ -239,6 +294,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
       onEvent({ type: 'error', message: 'aborted by user' });
       onEvent({ type: 'done' });
       heartbeat('idle');
+      if (runLock) releaseRunLock(runLock.token);
       return finalReply;
     }
     if (shouldCompress(messages, CONTEXT_LIMIT)) {
@@ -250,6 +306,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
       reply = await callOpenCode(messages, onEvent);
     } catch (e: any) {
       onEvent({ type: 'error', message: e.message });
+      if (runLock) releaseRunLock(runLock.token);
       return finalReply || `Erro: ${e.message}`;
     }
 
@@ -267,19 +324,41 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
 
     messages.push({ role: 'assistant', content: reply });
 
-    // Checkpoint antes de executar ferramentas (imortalidade)
-    saveCheckpoint({
+    // Checkpoint v2 before executing tools (idempotency ledger)
+    const batchCalls: import('./immortality').CheckpointToolCall[] = toolCalls.map((tc, i) => ({
+      id: toolFingerprint(tc.type, tc.command, i),
+      type: tc.type,
+      args: tc.command,
+      status: 'pending',
+    }));
+    const checkpointBase = () => ({
       messages,
       mode,
       lastUserMessage: message,
       lastAssistantReply: cleanReply || finalReply,
       toolExecutionIndex: toolIter,
       totalToolExecutions: MAX_TOOL_ITERATIONS,
+      runId,
+      sessionId: session?.id ?? null,
+      phase: 'executing_tools' as const,
+      permissionMode: permissionMode || permCfg.mode,
+      repoPath: toolCwd,
+      toolBatch: { assistantRaw: reply, calls: batchCalls, toolIter },
+      lockToken: runLock?.token,
     });
+    saveCheckpoint(checkpointBase());
     heartbeat('busy');
 
-    for (const tc of toolCalls) {
+    const markBatch = (index: number, success: boolean, output: string) => {
+      if (index < 0 || index >= batchCalls.length) return;
+      batchCalls[index].status = success ? 'done' : 'failed';
+      batchCalls[index].resultPreview = output.slice(0, 2000);
+      saveCheckpoint(checkpointBase());
+    };
+
+    for (let ti = 0; ti < toolCalls.length; ti++) {
       if (signal?.aborted) break;
+      const tc = toolCalls[ti];
       allToolCalls.push({ type: tc.type, success: false });
 
       if (tc.type === 'memory_save') {
@@ -287,6 +366,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
@@ -295,6 +375,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
@@ -303,6 +384,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
@@ -311,6 +393,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
@@ -320,43 +403,99 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
           const err = { success: false, output: 'formato: nome|descricao|conteudo' };
           onEvent({ type: 'tool_result', tool: tc.type, ...err });
           messages.push({ role: 'user', content: `[RESULTADO]\n${err.output}` });
+          markBatch(ti, false, err.output);
           continue;
         }
         const result = createSkill(parts[0].trim(), parts[1].trim(), parts.slice(2).join('|').trim());
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
+      // Consecutive [TOOL:delegate] calls fan out in parallel (bounded).
       if (tc.type === 'delegate') {
-        const parts = tc.command.split('|');
-        if (parts.length < 2) {
-          const err = { success: false, output: 'formato: objetivo|contexto|ferramentas(opcional)' };
-          onEvent({ type: 'tool_result', tool: tc.type, ...err });
-          messages.push({ role: 'user', content: `[RESULTADO]\n${err.output}` });
+        const wave: typeof toolCalls = [];
+        let j = ti;
+        while (j < toolCalls.length && toolCalls[j].type === 'delegate') {
+          wave.push(toolCalls[j]);
+          j++;
+        }
+        // We already pushed one allToolCalls entry for ti; add the rest
+        for (let k = 1; k < wave.length; k++) {
+          allToolCalls.push({ type: 'delegate', success: false });
+        }
+
+        const auth = await authorizeTool('delegate', wave.map((w) => w.command).join(' || '), {
+          cwd: toolCwd,
+          mode,
+          permissionMode,
+          onEvent,
+          onPermissionRequest,
+        });
+        if (!auth.allowed) {
+          const out = auth.message || 'Permission denied';
+          for (let k = 0; k < wave.length; k++) {
+            onEvent({ type: 'tool_result', tool: 'delegate', success: false, output: out });
+            messages.push({ role: 'user', content: `[RESULTADO]\n${out}` });
+            markBatch(ti + k, false, out);
+          }
+          ti = j - 1;
           continue;
         }
-        const goal    = parts[0].trim();
-        const context = parts[1].trim();
-        const tools   = parts[2] ? parts[2].trim().split(',').map(t => t.trim()) : undefined;
-        const id = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
 
-        onEvent({ type: 'subagent_start', id, goal });
+        const waveStartIdx = allToolCalls.length - wave.length;
+        const results = await runPool(wave, getMaxSubagentConcurrency(), async (item, idx) => {
+          const parts = item.command.split('|');
+          if (parts.length < 2) {
+            return {
+              id: `sub_invalid_${idx}`,
+              success: false,
+              summary: 'formato: objetivo|contexto|ferramentas(opcional)',
+            };
+          }
+          const goal = parts[0].trim();
+          const context = parts[1].trim();
+          const tools = parts[2] ? parts[2].trim().split(',').map((t) => t.trim()) : undefined;
+          const id = `sub_${Date.now().toString(36)}_${idx}_${Math.random().toString(36).slice(2, 5)}`;
+          delegateTask(
+            goal,
+            context,
+            tools,
+            {
+              onToken: (chunk) => onEvent({ type: 'subagent_token', id, content: chunk }),
+              onToolStart: (tool) => onEvent({ type: 'subagent_tool', id, tool, done: false }),
+              onToolDone: (tool, success) =>
+                onEvent({ type: 'subagent_tool', id, tool, done: true, success }),
+            },
+            { id, cwd: toolCwd, signal, permissionMode, onPermissionRequest },
+          );
+          onEvent({ type: 'subagent_start', id, goal });
+          const result = await waitForDelegation(id);
+          return {
+            id,
+            success: result?.success ?? false,
+            summary: result?.summary ?? '[failed]',
+          };
+        });
 
-        const result = await waitForDelegation(
-          delegateTask(goal, context, tools, {
-            onToken:    (chunk) => onEvent({ type: 'subagent_token', id, content: chunk }),
-            onToolStart: (tool, args) => onEvent({ type: 'subagent_tool', id, tool, done: false }),
-            onToolDone:  (tool, success) => onEvent({ type: 'subagent_tool', id, tool, done: true, success }),
-          }),
-        );
-
-        if (result) {
-          allToolCalls[allToolCalls.length - 1].success = result.success;
-          onEvent({ type: 'subagent_done', id, success: result.success, summary: result.summary });
-          messages.push({ role: 'user', content: `[RESULTADO SUBAGENTE ${id}]\n${result.summary}` });
+        for (let k = 0; k < results.length; k++) {
+          const r = results[k];
+          allToolCalls[waveStartIdx + k].success = r.success;
+          onEvent({
+            type: 'subagent_done',
+            id: r.id,
+            success: r.success,
+            summary: r.summary,
+          });
+          messages.push({
+            role: 'user',
+            content: `[RESULTADO SUBAGENTE ${r.id} | index=${ti + k}]\n${r.summary}`,
+          });
+          markBatch(ti + k, r.success, r.summary);
         }
+        ti = j - 1;
         continue;
       }
 
@@ -365,6 +504,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
@@ -373,6 +513,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         allToolCalls[allToolCalls.length - 1].success = result.success;
         onEvent({ type: 'tool_result', tool: tc.type, success: result.success, output: result.output });
         messages.push({ role: 'user', content: `[RESULTADO]\n${result.output}` });
+        markBatch(ti, result.success, result.output);
         continue;
       }
 
@@ -389,6 +530,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
           onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
           onEvent({ type: 'tool_result', tool: tc.type, success: false, output: out });
           messages.push({ role: 'user', content: `[RESULTADO MCP ${tc.type}]\n${out}` });
+          markBatch(ti, false, out);
           continue;
         }
         onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
@@ -408,6 +550,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
           role: 'user',
           content: `[RESULTADO MCP ${tc.type}]\n${mcpResult.output}`,
         });
+        markBatch(ti, mcpResult.success, mcpResult.output);
       } else {
         const auth = await authorizeTool(tc.type, tc.command, {
           cwd: toolCwd,
@@ -421,6 +564,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
           onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
           onEvent({ type: 'tool_result', tool: tc.type, success: false, output: out });
           messages.push({ role: 'user', content: `[RESULTADO]\n${out}` });
+          markBatch(ti, false, out);
           continue;
         }
         onEvent({ type: 'tool_start', tool: tc.type, args: tc.command });
@@ -442,6 +586,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
           role: 'user',
           content: `[RESULTADO]\n${result.output.slice(0, 4000)}`,
         });
+        markBatch(ti, result.success, result.output);
       }
     }
 
@@ -455,6 +600,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
   // Checkpoint limpo após execução bem-sucedida
   clearCheckpoint();
   heartbeat('idle');
+  if (runLock) releaseRunLock(runLock.token);
 
   if (finalReply) {
     if (session) {
@@ -470,18 +616,26 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
 
   return finalReply;
   } catch (e: any) {
-    // Engine-level crash: salva checkpoint para recovery
+    // Engine-level crash: keep useful v2 checkpoint; only write minimal if none
     const errMsg = e?.message || String(e);
-    saveCheckpoint({
-      messages: [{ role: 'system', content: '' }, { role: 'user', content: message }],
-      mode,
-      lastUserMessage: message,
-      lastAssistantReply: '',
-      toolExecutionIndex: 0,
-      totalToolExecutions: MAX_TOOL_ITERATIONS,
-    });
+    const existing = loadCheckpoint();
+    if (!existing?.toolBatch) {
+      saveCheckpoint({
+        messages: [{ role: 'system', content: '' }, { role: 'user', content: message }],
+        mode,
+        lastUserMessage: message,
+        lastAssistantReply: '',
+        toolExecutionIndex: 0,
+        totalToolExecutions: MAX_TOOL_ITERATIONS,
+        runId,
+        sessionId: session?.id ?? null,
+        phase: 'executing_tools',
+        repoPath: toolCwd,
+      });
+    }
     reportCrash(e instanceof Error ? e : new Error(errMsg));
     onEvent({ type: 'error', message: errMsg });
+    if (runLock) releaseRunLock(runLock.token);
     return finalReply || `Erro no engine: ${errMsg}`;
   }
 }

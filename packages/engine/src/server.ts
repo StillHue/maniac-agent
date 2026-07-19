@@ -120,6 +120,22 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse): 
           case 'tool_result':
             sendEvent('tool_result', JSON.stringify({ tool: event.tool, success: event.success, output: event.output }));
             break;
+          case 'subagent_start':
+            sendEvent('subagent_start', JSON.stringify({ id: event.id, goal: event.goal }));
+            break;
+          case 'subagent_token':
+            sendEvent('subagent_token', JSON.stringify({ id: event.id, content: event.content }));
+            break;
+          case 'subagent_tool':
+            sendEvent('subagent_tool', JSON.stringify({
+              id: event.id, tool: event.tool, done: event.done, success: event.success,
+            }));
+            break;
+          case 'subagent_done':
+            sendEvent('subagent_done', JSON.stringify({
+              id: event.id, success: event.success, summary: event.summary,
+            }));
+            break;
           case 'mode':
             sendEvent('mode', JSON.stringify({ mode: event.mode }));
             break;
@@ -229,22 +245,52 @@ async function handleImmortality(req: http.IncomingMessage, res: http.ServerResp
     }
 
     if (action === 'resume') {
+      // Inspect-only — do not execute agent runs from this unauthenticated endpoint.
+      // Actual resume: CLI startup tryAutoResume, or POST action=execute_resume with token.
       const resume = checkResume();
       if (resume.shouldResume && resume.checkpoint) {
         sendJson(res, 200, {
           canResume: true,
+          soft: resume.checkpoint.version < 2 || !resume.checkpoint.toolBatch,
           checkpoint: {
+            version: resume.checkpoint.version,
             timestamp: resume.checkpoint.timestamp,
             mode: resume.checkpoint.session.mode,
             messageCount: resume.checkpoint.session.messages.length,
-            lastUserMessage: resume.checkpoint.session.lastUserMessage,
-            lastAssistantReply: resume.checkpoint.session.lastAssistantReply,
+            lastUserMessage: resume.checkpoint.session.lastUserMessage?.slice(0, 500),
+            pendingTools: resume.checkpoint.toolBatch?.calls?.filter((c) => c.status === 'pending').length ?? null,
           },
           crashReport: resume.crashReport,
+          hint: 'Use CLI auto-resume, maniac without --no-auto-resume, or action=execute_resume with MANIAC_RESUME_TOKEN',
         });
       } else {
         sendJson(res, 200, { canResume: false });
       }
+      return;
+    }
+
+    if (action === 'execute_resume') {
+      const token = process.env.MANIAC_RESUME_TOKEN || '';
+      const provided =
+        (req.headers['x-maniac-resume-token'] as string) ||
+        new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).searchParams.get('token') ||
+        '';
+      if (!token || provided !== token) {
+        sendJson(res, 401, { error: 'MANIAC_RESUME_TOKEN required (header X-Maniac-Resume-Token)' });
+        return;
+      }
+      const { tryAutoResume } = require('./resume');
+      const outcome = await tryAutoResume({ enabled: true });
+      if (!outcome) {
+        sendJson(res, 200, { canResume: false, message: 'No checkpoint to resume' });
+        return;
+      }
+      sendJson(res, 200, {
+        canResume: outcome.resumed,
+        soft: outcome.soft,
+        message: outcome.message,
+        reply: outcome.reply?.slice(0, 4000),
+      });
       return;
     }
 
@@ -327,6 +373,17 @@ export function startServer(port?: number): Promise<http.Server> {
     server.listen(p, () => {
       writePid();
       console.log(`[maniac-server] PID ${process.pid} ouvindo em http://localhost:${p}`);
+      // Safe auto-resume on startup (read-only pending tools only)
+      if (process.env.MANIAC_NO_AUTO_RESUME !== '1') {
+        try {
+          const { tryAutoResume } = require('./resume');
+          void tryAutoResume({ enabled: true }).then((outcome: any) => {
+            if (outcome?.resumed) {
+              console.log(`[maniac-server] auto-resume: ${outcome.message}`);
+            }
+          });
+        } catch {}
+      }
       resolve(server);
     });
 

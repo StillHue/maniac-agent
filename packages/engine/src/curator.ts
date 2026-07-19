@@ -73,8 +73,28 @@ export function getCuratorStatus(): { success: boolean; output: string } {
   };
 }
 
-export function runCurator(): { success: boolean; output: string } {
+export function runCurator(opts: { dryRun?: boolean } = {}): { success: boolean; output: string } {
   try {
+    const { isProposalOnly } = require('./autonomy');
+    const { detectCuratorArchiveProposals } = require('./proposals');
+    const proposalOnly = opts.dryRun ?? isProposalOnly();
+
+    if (proposalOnly) {
+      const proposals = detectCuratorArchiveProposals();
+      const state = loadState();
+      state.lastRun = Date.now();
+      saveState(state);
+      return {
+        success: true,
+        output:
+          `Curador em modo proposal-only (dry-run).\n` +
+          `  Proposals criadas/atualizadas: ${proposals.length}\n` +
+          (proposals.length
+            ? proposals.map((p: any) => `  - ${p.id}: ${p.title}`).join('\n')
+            : '  Nenhuma skill stale.'),
+      };
+    }
+
     const state = loadState();
     const now = Date.now();
 
@@ -139,5 +159,34 @@ export function stopCurator(): void {
   if (curatorTimer) {
     clearInterval(curatorTimer);
     curatorTimer = null;
+  }
+}
+
+/** Archive a single skill by SKILL.md path (used by approved curator_archive proposals). */
+export function archiveSkillByPath(skillMdPath: string): { success: boolean; output: string } {
+  try {
+    const skillDir = path.dirname(path.resolve(skillMdPath));
+    const catName = path.basename(path.dirname(skillDir));
+    const skillName = path.basename(skillDir);
+    if (!fs.existsSync(skillMdPath)) {
+      return { success: false, output: `Skill not found: ${skillMdPath}` };
+    }
+    // Jail: must live under SKILLS_DIR
+    const rel = path.relative(SKILLS_DIR, skillDir);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      return { success: false, output: 'Archive denied: path outside skills directory' };
+    }
+    const archivePath = path.join(ARCHIVE_DIR, catName, skillName);
+    if (!fs.existsSync(path.dirname(archivePath))) {
+      fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+    }
+    if (fs.existsSync(archivePath)) {
+      return { success: false, output: `Already archived: ${catName}/${skillName}` };
+    }
+    takeSnapshot();
+    fs.renameSync(skillDir, archivePath);
+    return { success: true, output: `Archived ${catName}/${skillName} → ${archivePath}` };
+  } catch (e: any) {
+    return { success: false, output: `Archive failed: ${e.message}` };
   }
 }

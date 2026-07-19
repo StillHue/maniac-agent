@@ -576,7 +576,8 @@ export function toolSourceEdit(filePath: string, oldString: string, newString: s
     }
 
     const resolvedPath = path.resolve(resolved);
-    if (!resolvedPath.startsWith(ENGINE_PKG)) {
+    const rel = path.relative(ENGINE_PKG, resolvedPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
       return { success: false, output: `Acesso negado: "${filePath}" fora do pacote engine` };
     }
     if (!fs.existsSync(resolvedPath)) {
@@ -637,23 +638,16 @@ export function toolCreateTool(args: string, cwd: string): ToolOutput {
 
 export function toolModelSwitch(args: string): ToolOutput {
   try {
-    let provider: string, model: string;
+    let provider: string, model: string | undefined;
     const pipeIdx = args.indexOf('|');
     if (pipeIdx !== -1) {
       provider = args.slice(0, pipeIdx).trim();
-      model = args.slice(pipeIdx + 1).trim();
+      model = args.slice(pipeIdx + 1).trim() || undefined;
     } else {
       provider = args.trim();
-      model = args.includes('opencode') ? 'north-mini-code-free'
-        : args.includes('groq') ? 'llama-3.1-8b-instant'
-        : args.includes('gemini') ? 'gemini-2.0-flash'
-        : 'north-mini-code-free';
     }
-
-    const { setActiveProvider, getActiveProvider } = require('./opencode');
-    setActiveProvider({ provider: provider as any, model });
-    const cfg = getActiveProvider();
-    return { success: true, output: `Modelo alterado: ${cfg.provider}/${cfg.model}` };
+    const { applyProviderSwitch } = require('./provider-switch');
+    return applyProviderSwitch(provider, model);
   } catch (e: any) {
     return { success: false, output: `Erro ao trocar modelo: ${e.message}` };
   }
@@ -858,33 +852,35 @@ export function toolImmortalityStatus(): ToolOutput {
   }
 }
 
-export function toolImmortalityResume(): ToolOutput {
+export async function toolImmortalityResume(args: string = ''): Promise<ToolOutput> {
   try {
-    const resume = checkResume();
-    if (!resume.shouldResume) {
+    const { tryDetectResume, resumeFromCheckpoint } = require('./resume');
+    const detected = tryDetectResume();
+    if (!detected.shouldResume || !detected.checkpoint) {
       return { success: true, output: 'Nada para retomar. Estado limpo.' };
     }
+    const cp = detected.checkpoint;
+    const pending =
+      cp.toolBatch?.calls?.filter((c: any) => c.status === 'pending' || c.status === 'failed') || [];
+    const inspect =
+      `Checkpoint v${cp.version} encontrado.\n` +
+      `  soft=${detected.soft}\n` +
+      `  pending tools: ${pending.length}\n` +
+      `  last user: ${(cp.session.lastUserMessage || '').slice(0, 200)}\n` +
+      `\nPara executar o resume, use CLI (startup auto-resume) ou passe args "confirm".`;
 
-    const cp = resume.checkpoint;
-    const output: string[] = [
-      '=== RETOMANDO DE CHECKPOINT ===',
-      `Sessão anterior: ${cp?.environment.processId || 'desconhecido'}`,
-      `Host: ${cp?.environment.hostname || 'desconhecido'}`,
-      `Timestamp: ${cp?.timestamp ? new Date(cp.timestamp).toISOString() : 'desconhecido'}`,
-      `Modo: ${cp?.session.mode || 'chat'}`,
-      `Mensagens no histórico: ${cp?.session.messages.length || 0}`,
-      `Última mensagem do usuário: ${(cp?.session.lastUserMessage || '').slice(0, 100)}`,
-      `Última resposta: ${(cp?.session.lastAssistantReply || '').slice(0, 100)}`,
-    ];
-
-    if (resume.crashReport) {
-      output.push(`\n☠️ CAUSA DA MORTE: ${resume.crashReport.error}`);
+    const confirm = /\bconfirm\b/i.test(args || '');
+    if (!confirm) {
+      return { success: true, output: inspect };
     }
 
-    // Se havia checkpoint e queremos retomar, mantemos o checkpoint para o caller
-    return { success: true, output: output.join('\n') };
+    const outcome = await resumeFromCheckpoint(cp, { autoMutations: false });
+    return {
+      success: outcome.resumed,
+      output: `${outcome.message}${outcome.reply ? '\n\n' + outcome.reply.slice(0, 2000) : ''}`,
+    };
   } catch (e: any) {
-    return { success: false, output: `Erro ao verificar resume: ${e.message}` };
+    return { success: false, output: `Erro ao retomar: ${e.message}` };
   }
 }
 
@@ -897,28 +893,10 @@ export function toolImmortalityForget(): ToolOutput {
   }
 }
 
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_API = 'https://api.telegram.org';
-
-function tgApiCall(method: string, body: any): Promise<any> {
-  return new Promise((resolve, reject) => {
-    if (!TELEGRAM_TOKEN) return reject(new Error('TELEGRAM_BOT_TOKEN nao configurado'));
-    const b = JSON.stringify(body);
-    const u = new URL(`${TELEGRAM_API}/bot${TELEGRAM_TOKEN}/${method}`);
-    const opts = {
-      hostname: u.hostname, path: u.pathname, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) },
-    };
-    const r = require('https').request(opts, (res: any) => {
-      let d = ''; res.on('data', (c: string) => d += c);
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({ ok: false, description: d.slice(0, 200) }); } });
-    });
-    r.on('error', reject); r.write(b); r.end();
-  });
-}
-
 export async function toolSendTelegram(args: string): Promise<ToolOutput> {
   try {
+    const { tgApiCall } = require('./telegram/api');
+    const { listKnownChats } = require('./telegram/sessions');
     const parsed = JSON.parse(args);
     const to = parsed.to || parsed.chat_id || parsed.target;
     const text = parsed.text || parsed.message;
@@ -926,33 +904,44 @@ export async function toolSendTelegram(args: string): Promise<ToolOutput> {
     if (!to || !text) {
       return { success: false, output: 'formato: {"to": "@username ou chat_id", "text": "mensagem"}' };
     }
-    let chatId = to;
-    if (chatId.startsWith('@') || !/^\d+$/.test(chatId)) {
-      const updates = await tgApiCall('getUpdates', { timeout: 5 });
+    let chatId = String(to);
+    if (chatId.startsWith('@') || !/^-?\d+$/.test(chatId)) {
       const username = chatId.replace('@', '').toLowerCase();
-      for (const u of updates.result || []) {
-        const from = u.message?.from || u.my_chat_member?.from || u.chat_join_request?.from;
-        if (from && from.username && from.username.toLowerCase() === username) {
-          chatId = String(u.message?.chat?.id || from.id);
-          break;
-        }
+      const known = listKnownChats().find(
+        (c: any) => c.username && c.username.replace('@', '').toLowerCase() === username,
+      );
+      if (!known) {
+        return {
+          success: false,
+          output: `Usuario @${username} nao encontrado no mapa de chats do bot. Use um chat_id numerico ou espere o usuario falar com o bot primeiro.`,
+        };
       }
-      if (chatId === to) {
-        return { success: false, output: `Usuario @${username} nao encontrado. Use telegram_list_chats para ver contatos disponiveis.` };
-      }
+      chatId = String(known.chatId);
     }
-    const chatIdNum = parseInt(chatId);
+    const chatIdNum = parseInt(chatId, 10);
     if (editMessageId) {
-      const result = await tgApiCall('editMessageText', { chat_id: chatIdNum, message_id: editMessageId, text, parse_mode: 'Markdown' });
+      const result = await tgApiCall('editMessageText', {
+        chat_id: chatIdNum,
+        message_id: editMessageId,
+        text,
+        parse_mode: 'Markdown',
+      });
       if (result.ok) {
         return { success: true, output: `Mensagem editada (message_id: ${editMessageId})` };
       }
       return { success: false, output: result.description || 'Erro ao editar mensagem Telegram' };
     }
-    const result = await tgApiCall('sendMessage', { chat_id: chatIdNum, text, parse_mode: 'Markdown' });
+    const result = await tgApiCall('sendMessage', {
+      chat_id: chatIdNum,
+      text,
+      parse_mode: 'Markdown',
+    });
     if (result.ok) {
       const msgId = result.result?.message_id;
-      return { success: true, output: `Mensagem enviada para ${to} (chat_id: ${chatId})${msgId ? `, message_id: ${msgId}` : ''}` };
+      return {
+        success: true,
+        output: `Mensagem enviada para ${to} (chat_id: ${chatId})${msgId ? `, message_id: ${msgId}` : ''}`,
+      };
     }
     return { success: false, output: result.description || 'Erro Telegram' };
   } catch (e: any) {
@@ -962,24 +951,25 @@ export async function toolSendTelegram(args: string): Promise<ToolOutput> {
 
 export async function toolTelegramListChats(): Promise<ToolOutput> {
   try {
-    const data = await tgApiCall('getUpdates', { timeout: 5 });
-    const seen: Record<number, boolean> = {};
-    const chats: { id: number; name: string; username: string }[] = [];
-    for (const u of data.result || []) {
-      const from = u.message?.from || u.my_chat_member?.from || u.chat_join_request?.from;
-      if (from && !seen[from.id]) {
-        seen[from.id] = true;
-        const chat = u.message?.chat || from;
-        chats.push({
-          id: chat.id || from.id,
-          name: [chat.first_name || '', chat.last_name || ''].filter(Boolean).join(' ') || chat.title || '?',
-          username: from.username ? '@' + from.username : '',
-        });
-      }
+    const { listKnownChats } = require('./telegram/sessions');
+    const chats = listKnownChats();
+    if (chats.length === 0) {
+      return {
+        success: true,
+        output:
+          'Nenhum chat no mapa. Rode `maniac telegram` e peca para o usuario enviar uma mensagem ao bot.',
+      };
     }
-    if (chats.length === 0) return { success: true, output: 'Nenhum chat encontrado. Envie uma mensagem para o bot primeiro.' };
-    const lines = chats.map(c => `  ${c.id} | ${c.name} ${c.username}`).join('\n');
-    return { success: true, output: `Chats disponiveis:\n${lines}\n\nUse [TOOL:send_telegram] {"to": "id_ou_@username", "text": "msg"}` };
+    const lines = chats
+      .map(
+        (c: any) =>
+          `  ${c.chatId} | ${c.title || '?'} ${c.username ? '@' + c.username.replace(/^@/, '') : ''}`,
+      )
+      .join('\n');
+    return {
+      success: true,
+      output: `Chats conhecidos:\n${lines}\n\nUse [TOOL:send_telegram] {"to": "id", "text": "msg"}`,
+    };
   } catch (e: any) {
     return { success: false, output: `Erro: ${e.message}` };
   }
@@ -1047,6 +1037,10 @@ export async function executeToolCall(
       return toolCreateTool(command, cwd);
     case 'model_switch':
       return toolModelSwitch(command);
+    case 'http_request': {
+      const { toolHttpRequest } = require('./http/tools-http');
+      return await toolHttpRequest(command);
+    }
     case 'system_prompt_edit':
       return toolSystemPromptEdit(command);
     case 'rebuild_engine':
@@ -1072,9 +1066,45 @@ export async function executeToolCall(
     case 'immortality_status':
       return toolImmortalityStatus();
     case 'immortality_resume':
-      return toolImmortalityResume();
+      return await toolImmortalityResume(command);
     case 'immortality_forget':
       return toolImmortalityForget();
+    case 'proposal_list': {
+      const { listProposals } = require('./proposals');
+      const status = command.trim() || undefined;
+      const items = listProposals(status || undefined);
+      if (!items.length) return { success: true, output: 'No proposals.' };
+      return {
+        success: true,
+        output: items
+          .map(
+            (p: any) =>
+              `${p.id}  [${p.status}]  score=${p.evidence.score.toFixed(2)}  ${p.kind}  ${p.title}`,
+          )
+          .join('\n'),
+      };
+    }
+    case 'proposal_show': {
+      const { getProposal } = require('./proposals');
+      const p = getProposal(command.trim());
+      if (!p) return { success: false, output: 'Proposal not found' };
+      return {
+        success: true,
+        output: JSON.stringify(p, null, 2),
+      };
+    }
+    case 'proposal_reject': {
+      const { updateProposalStatus } = require('./proposals');
+      const id = command.trim().split('|')[0].trim();
+      const p = updateProposalStatus(id, 'rejected');
+      return p
+        ? { success: true, output: `Rejected ${id}` }
+        : { success: false, output: 'Proposal not found' };
+    }
+    case 'proposal_apply': {
+      const { applyProposal } = require('./proposals');
+      return await applyProposal(command.trim(), cwd);
+    }
     default:
       return { success: false, output: `ferramenta desconhecida: ${type}` };
   }
