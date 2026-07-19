@@ -17,6 +17,9 @@ out/
 .next/
 .turbo/
 *.tsbuildinfo
+# Compiled JS emitted alongside TS source (kept out of version control)
+packages/**/src/**/*.js
+packages/**/src/**/*.js.map
 
 # ─── TypeScript ──────────────────────────────────────────────────────────────
 *.js.map
