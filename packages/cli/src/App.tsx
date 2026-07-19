@@ -16,6 +16,9 @@ import {
   listProposals,
   applyProposal,
   updateProposalStatus,
+  runSentinelReview,
+  parseSentinelArg,
+  SENTINEL_MODEL,
   type PermissionMode,
   type PermissionPromptDecision,
   type QueueEntry,
@@ -491,6 +494,109 @@ export function App({
     [requestPermission, sessionId],
   );
 
+  /** Isolated Bugbot review — does not touch chatHistory / session. */
+  const doSentinel = useCallback(
+    async (scope: 'uncommitted' | 'branch') => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      const abort = { aborted: false };
+      abortRef.current = abort;
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      setIsLoading(true);
+      setLiveText('');
+      setStreamTools([]);
+      setStreamSubagents([]);
+      setSubagentDispatchCount(0);
+      setShowBanner(false);
+
+      let fullText = '';
+      const tools: ToolCallView[] = [];
+
+      const clearLive = () => {
+        runningRef.current = false;
+        setIsLoading(false);
+        setLiveText('');
+        setStreamTools([]);
+        setStreamSubagents([]);
+        setSubagentDispatchCount(0);
+        setPermPrompt(null);
+      };
+
+      setStaticItems((prev) => [
+        ...prev,
+        {
+          type: 'system',
+          id: nextId(),
+          text: `◆ Sentinel · ${scope} · ${SENTINEL_MODEL}`,
+          variant: 'info',
+        },
+      ]);
+
+      try {
+        const report = await runSentinelReview({
+          cwd: process.cwd(),
+          scope,
+          signal: controller.signal,
+          onEvent: (event: StreamEvent) => {
+            if (abort.aborted) return;
+            switch (event.type) {
+              case 'token':
+                fullText += event.content;
+                setLiveText(fullText);
+                break;
+              case 'reasoning':
+                break;
+              case 'tool_start': {
+                const tc: ToolCallView = { tool: event.tool, args: event.args, done: false };
+                tools.push(tc);
+                setStreamTools([...tools]);
+                break;
+              }
+              case 'tool_result': {
+                const tc = tools.find((t) => t.tool === event.tool && !t.done);
+                if (tc) {
+                  tc.done = true;
+                  tc.success = event.success;
+                  tc.output = event.output;
+                }
+                setStreamTools([...tools]);
+                break;
+              }
+              case 'error':
+                fullText += `\n[error: ${event.message}]`;
+                setLiveText(fullText);
+                break;
+            }
+          },
+        });
+
+        if (abort.aborted) {
+          clearLive();
+          return;
+        }
+
+        const text = (fullText.trim() || report || '').trim();
+        if (text || tools.length > 0) {
+          setStaticItems((prev) => [
+            ...prev,
+            { type: 'assistant', id: nextId(), text: text || report, tools: [...tools] },
+          ]);
+        }
+      } catch (e: unknown) {
+        if (!abort.aborted) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setStaticItems((prev) => [
+            ...prev,
+            { type: 'system', id: nextId(), text: `✗ sentinel: ${msg}`, variant: 'error' },
+          ]);
+        }
+      }
+      clearLive();
+    },
+    [],
+  );
+
   const drainQueue = useCallback(async () => {
     if (drainingRef.current || runningRef.current || isLoading) return;
     const next = globalPromptQueue.dequeue();
@@ -841,6 +947,31 @@ export function App({
           break;
         }
 
+        case 'sentinel': {
+          if (runningRef.current) {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: '✗ agent busy — wait or Esc, then /sentinel',
+                variant: 'error',
+              },
+            ]);
+            break;
+          }
+          const parsed = parseSentinelArg(arg);
+          if (typeof parsed === 'object' && 'error' in parsed) {
+            setStaticItems((prev) => [
+              ...prev,
+              { type: 'system', id: nextId(), text: parsed.error, variant: 'error' },
+            ]);
+            break;
+          }
+          void doSentinel(parsed);
+          break;
+        }
+
         default:
           setStaticItems((prev) => [
             ...prev,
@@ -853,7 +984,7 @@ export function App({
           ]);
       }
     },
-    [chatHistory, exit, attachClipboardImage, syncQueue, abortCurrentRun],
+    [chatHistory, exit, attachClipboardImage, syncQueue, abortCurrentRun, doSentinel],
   );
 
   const handleSubmit = useCallback(

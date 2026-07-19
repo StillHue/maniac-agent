@@ -22,6 +22,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'proposals', description: 'list pending improvement proposals' },
   { name: 'approve', args: '<id>', description: 'apply an improvement proposal' },
   { name: 'reject', args: '<id>', description: 'reject an improvement proposal' },
+  {
+    name: 'sentinel',
+    args: '[branch]',
+    description: 'Bugbot security/bug review (uncommitted, or branch vs main)',
+  },
   { name: 'help', description: 'show this help' },
   { name: 'exit', description: 'quit maniac' },
 ];

@@ -34,6 +34,7 @@ Interactive:
   Alt+V       attach clipboard image as [imageN] (also /paste; Ctrl+V works
               in terminals that don't intercept it for text paste)
   /help       list slash commands
+  /sentinel   Bugbot review (uncommitted); /sentinel branch vs main
   /proposals  list improvement proposals
   /approve id apply a proposal
   /reject id  reject a proposal
