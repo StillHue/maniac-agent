@@ -67,7 +67,8 @@ for (const rel of PKG_PATHS) {
 
 // Keep workspace CLI deps as * (yarn); published tarball is bundled separately.
 function git(args) {
-  const r = spawnSync('git', args, { cwd: root, stdio: 'inherit', shell: true });
+  // Do not use shell:true — on Windows it splits `-m chore: release vX` into pathspecs.
+  const r = spawnSync('git', args, { cwd: root, stdio: 'inherit' });
   if ((r.status ?? 1) !== 0) process.exit(r.status ?? 1);
 }
 
@@ -76,7 +77,7 @@ if (dry) {
   process.exit(0);
 }
 
-git(['add', ...PKG_PATHS]);
+git(['add', ...PKG_PATHS.map((p) => path.normalize(p))]);
 git(['commit', '-m', `chore: release ${tag}`]);
 git(['tag', '-a', tag, '-m', `Release ${tag}`]);
 
