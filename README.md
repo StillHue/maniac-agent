@@ -1,11 +1,22 @@
-# maniac
+```
+     ▒▓▓▓▓▓▓▒░        ░▒▓▓▓▓▓▓▓▓▓▓▓▒░          ░▒▓▓▓▓▓▒
+   ▒▓▓▓▓▓▓▓▓▓▓▒░    ░▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒░     ░▒▓▓▓▓▓▓▓▓▒
+     ░▒▒▓▓▓▒▒░        ░░▒▒▓▓▓▓▓▄█▀▓▓▒▒░░         ░▒▓▓▓▒▒░
+    ╱      ╱     ╱        ╱   ▄█▀      ╱       ╱      ╱
+       ╱      ╱      ╱       ▀██▄   ╱      ╱       ╱
+    ╱     ╱      ╱      ╱      ▀█▄     ╱      ╱      ╱
+        ╱     ╱     ╱        ✦ ▄█  ✦     ╱       ╱
+               ╱           ▄█████████▄         ╱
+      ╱       ✧           ▐███ ███ ███▌   ✧        ╱
+          ╱               ▐███ ███ ███▌        ╱
+     ╱          ╱          ▀█████████▀             ╱
+  ··························█ █   █ █·······················
+
+         ✦ the 'what the hell, let's try it' agent ✦
+```
 
 <p align="center">
   <img src="docs/assets/maniac-mascot-wave.png" alt="Maniac chip mascot waving goodbye" width="220" />
-</p>
-
-<p align="center">
-  <strong>The "what the hell, let's try it" agent for your maniac ideas.</strong><br />
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -39,7 +50,7 @@ It is not a chatbot. It is not a coding assistant. It is the agent you spin up w
 
 ## Status
 
-Maniac is **experimental** (`v0.1.0`). Expect rough edges, breaking changes, and behavior that surprises you — that is part of the point. Feedback and contributions are very welcome.
+Maniac is **experimental** (`v0.2.0`). Expect rough edges, breaking changes, and behavior that surprises you — that is part of the point. Feedback and contributions are very welcome.
 
 ---
 
