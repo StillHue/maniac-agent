@@ -1,4 +1,5 @@
-```
+<p align="center">
+<pre>
      ▒▓▓▓▓▓▓▒░        ░▒▓▓▓▓▓▓▓▓▓▓▓▒░          ░▒▓▓▓▓▓▒
    ▒▓▓▓▓▓▓▓▓▓▓▒░    ░▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒░     ░▒▓▓▓▓▓▓▓▓▒
      ░▒▒▓▓▓▒▒░        ░░▒▒▓▓▓▓▓▄█▀▓▓▒▒░░         ░▒▓▓▓▒▒░
@@ -13,10 +14,7 @@
   ··························█ █   █ █·······················
 
          ✦ the 'what the hell, let's try it' agent ✦
-```
-
-<p align="center">
-  <img src="docs/assets/maniac-mascot-wave.png" alt="Maniac chip mascot waving goodbye" width="220" />
+</pre>
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
