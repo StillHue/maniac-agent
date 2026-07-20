@@ -36,6 +36,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   auto: 'auto',
   hermes: 'hermes',
   custom: 'custom',
+  claude: 'grok-build-0.1',
 };
 
 const ALIASES: Record<string, string> = {
@@ -45,7 +46,7 @@ const ALIASES: Record<string, string> = {
   'gpt-4': 'openai',
   'gpt-4o': 'openai',
   anthropic: 'anthropic',
-  claude: 'anthropic',
+  claude: 'opencode',
   gemini: 'gemini',
   google: 'gemini',
   openrouter: 'openrouter',

@@ -697,6 +697,16 @@ async function executeMcpTool(toolKey: string, argsString: string): Promise<{ su
     return { success: false, output: `Falha ao analisar args MCP: ${argsString}` };
   }
 
+  // Try persistent MCP client first (new system)
+  try {
+    const { findMcpTool, callMcpTool } = require('./mcp');
+    const mcpTool = findMcpTool(toolKey) || findMcpTool(toolName);
+    if (mcpTool) {
+      return await callMcpTool(mcpTool.qualifiedName, args);
+    }
+  } catch {}
+
+  // Fallback: search config files for server definition
   const home = require('os').homedir();
   const candidatePaths = [
     process.env.MCP_CONFIG_PATH || '',
@@ -716,7 +726,7 @@ async function executeMcpTool(toolKey: string, argsString: string): Promise<{ su
     } catch {}
   }
 
-  return { success: false, output: `Servidor MCP "${serverName}" nao encontrado` };
+  return { success: false, output: `Servidor MCP "${serverName}" nao encontrado. Use [TOOL:mcp] para configurar.` };
 }
 
 async function callMcpServer(config: any, toolName: string, args: any): Promise<{ success: boolean; output: string }> {

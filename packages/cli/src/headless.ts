@@ -16,6 +16,8 @@ export interface HeadlessOptions {
   cwd?: string;
   /** Image paths routed through the Groq vision model before the code model runs. */
   images?: string[];
+  /** Output format: 'ndjson' (default) or 'text' (plain text, final answer only). */
+  outputFormat?: 'ndjson' | 'text';
 }
 
 /** Project StreamEvent → compact NDJSON lines for scripting/CI. */
@@ -74,6 +76,8 @@ export async function runHeadless(opts: HeadlessOptions): Promise<string> {
     ? 'bypassPermissions'
     : opts.permissionMode || 'dontAsk';
 
+  const format = opts.outputFormat || 'ndjson';
+
   return defaultHarness.run({
     message: opts.prompt,
     mode: opts.mode || 'chat',
@@ -87,8 +91,18 @@ export async function runHeadless(opts: HeadlessOptions): Promise<string> {
       return 'deny';
     },
     onEvent: (event) => {
-      const line = projectNdjson(event);
-      if (line) process.stdout.write(JSON.stringify(line) + '\n');
+      if (format === 'text') {
+        // Plain text mode: only emit the final answer
+        if (event.type === 'token') {
+          process.stdout.write(event.content);
+        } else if (event.type === 'error') {
+          process.stderr.write(`[error] ${event.message}\n`);
+        }
+      } else {
+        // NDJSON mode (default): emit all events
+        const line = projectNdjson(event);
+        if (line) process.stdout.write(JSON.stringify(line) + '\n');
+      }
     },
   });
 }
@@ -103,6 +117,7 @@ export function parseCliArgs(argv: string[]): {
   images: string[];
   telegram: boolean;
   noAutoResume: boolean;
+  outputFormat: 'ndjson' | 'text';
 } {
   const args = argv.slice(2);
   let headless = false;
@@ -113,6 +128,7 @@ export function parseCliArgs(argv: string[]): {
   let help = false;
   let telegram = false;
   let noAutoResume = false;
+  let outputFormat: 'ndjson' | 'text' = 'ndjson';
   const images: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -129,6 +145,11 @@ export function parseCliArgs(argv: string[]): {
     } else if (a === '-i' || a === '--image') {
       const p = args[++i];
       if (p) images.push(p);
+    } else if (a === '--output-format') {
+      const fmt = args[++i];
+      if (fmt === 'text' || fmt === 'streaming-json' || fmt === 'ndjson') {
+        outputFormat = fmt === 'text' ? 'text' : 'ndjson';
+      }
     } else if (a === 'telegram' || a === '--telegram') {
       telegram = true;
     } else if (a === '--no-auto-resume') {
@@ -140,5 +161,5 @@ export function parseCliArgs(argv: string[]): {
     }
   }
 
-  return { headless, prompt, yolo, resume, continueLatest, help, images, telegram, noAutoResume };
+  return { headless, prompt, yolo, resume, continueLatest, help, images, telegram, noAutoResume, outputFormat };
 }

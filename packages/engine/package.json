@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@maniac/types": "*",
-    "dotenv": "^16.4.5"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^16.4.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

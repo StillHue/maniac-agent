@@ -7,6 +7,7 @@ import {
   saveCheckpoint, loadCheckpoint, clearCheckpoint,
   cleanImmortalityState, reportCrash, heartbeat,
 } from './immortality';
+import type { McpServerConfig } from './mcp';
 
 export interface ToolOutput {
   success: boolean;
@@ -153,21 +154,54 @@ export function toolLs(dirPath: string, cwd: string): ToolOutput {
   }
 }
 
+/**
+ * Read file contents with optional offset/limit (Grok Build style).
+ * Format: "path" or "path offset limit" (1-indexed line numbers).
+ * Examples:
+ *   "src/index.ts"           → first 200 lines
+ *   "src/index.ts 50 100"    → lines 50-149
+ *   "src/index.ts 0 50000"   → full file (up to 50k lines)
+ */
 export function toolRead(filePath: string, cwd: string): ToolOutput {
   try {
-    const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
+    const parts = filePath.trim().split(/\s+/);
+    const file = parts[0];
+    const offset = parseInt(parts[1], 10) || 1;
+    const limit = parseInt(parts[2], 10) || 200;
+
+    const resolved = path.isAbsolute(file) ? file : path.join(cwd, file);
     if (!fs.existsSync(resolved)) {
-      return { success: false, output: `arquivo nao encontrado: ${filePath}` };
+      return { success: false, output: `arquivo nao encontrado: ${file}` };
     }
+
+    const stat = fs.statSync(resolved);
+    if (stat.isDirectory()) {
+      return { success: false, output: `${file} é um diretorio, nao um arquivo` };
+    }
+
+    // Binary file detection: check first 512 bytes for null bytes
+    const fd = fs.openSync(resolved, 'r');
+    const buf = Buffer.alloc(512);
+    const bytesRead = fs.readSync(fd, buf, 0, 512, 0);
+    fs.closeSync(fd);
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0) {
+        return { success: false, output: `${file} parece ser um arquivo binario (${stat.size} bytes)` };
+      }
+    }
+
     const content = fs.readFileSync(resolved, 'utf8');
     const lines = content.split('\n');
-    const maxLines = 200;
-    const shown = lines.slice(0, maxLines);
-    let out = shown.map((l, i) => `${i + 1}: ${l}`).join('');
-    if (lines.length > maxLines) {
-      out += `\n... (${lines.length - maxLines} linhas a mais)`;
+    const totalLines = lines.length;
+    const start = Math.max(1, offset);
+    const end = Math.min(totalLines, start + limit - 1);
+    const shown = lines.slice(start - 1, end);
+
+    let out = shown.map((l, i) => `${start + i}: ${l}`).join('\n');
+    if (end < totalLines) {
+      out += `\n\n--- (${totalLines} linhas total, mostrando ${start}-${end} de ${totalLines}) ---`;
     }
-    return { success: true, output: out };
+    return { success: true, output: out || '(arquivo vazio)' };
   } catch (e: any) {
     return { success: false, output: e.message };
   }
@@ -204,11 +238,65 @@ export function toolEdit(filePath: string, oldStr: string, newStr: string, cwd: 
   }
 }
 
+/** Detect if ripgrep (rg) is available on PATH. */
+let _rgAvailable: boolean | null = null;
+function isRgAvailable(): boolean {
+  if (_rgAvailable !== null) return _rgAvailable;
+  try {
+    const cmd = process.platform === 'win32' ? 'where rg' : 'which rg';
+    execSync(cmd, { stdio: 'ignore', timeout: 3000, windowsHide: true });
+    _rgAvailable = true;
+  } catch {
+    _rgAvailable = false;
+  }
+  return _rgAvailable;
+}
+
+/**
+ * Grep search with ripgrep acceleration (Grok Build style).
+ * Falls back to native JS walk when rg is not installed.
+ * Format: "pattern [path]" — searches path (or cwd) for regex matches.
+ */
 export function toolGrep(pattern: string, searchPath: string | null, cwd: string): ToolOutput {
   try {
     const root = searchPath
       ? (path.isAbsolute(searchPath) ? searchPath : path.join(cwd, searchPath))
       : cwd;
+
+    // Fast path: use ripgrep when available
+    if (isRgAvailable()) {
+      try {
+        const args = [
+          '--no-heading',
+          '--line-number',
+          '--color=never',
+          '--max-count=60',
+          '--max-depth=8',
+          '-e', pattern,
+          root,
+        ];
+        const result = execSync(`rg ${args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ')}`, {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 15_000,
+          windowsHide: true,
+          maxBuffer: 256 * 1024,
+        });
+        const lines = result.trim().split('\n').filter(Boolean).slice(0, 60);
+        return {
+          success: true,
+          output: lines.length ? lines.join('\n') : '(sem resultados)',
+        };
+      } catch (rgErr: any) {
+        // rg exits 1 when no matches — that's not an error
+        if (rgErr.status === 1) {
+          return { success: true, output: '(sem resultados)' };
+        }
+        // Fall through to native on other errors
+      }
+    }
+
+    // Native fallback: recursive walk
     const results: string[] = [];
     const re = new RegExp(pattern, 'gi');
 
@@ -893,6 +981,508 @@ export function toolImmortalityForget(): ToolOutput {
   }
 }
 
+// ─── apply_patch: unified diff format (Grok Build / Codex style) ──────────
+
+/**
+ * Apply a unified diff patch to a file.
+ * Format: "filepath\n---\n<unified diff>"
+ * The diff uses standard unified format: --- a/path, +++ b/path, @@ hunks.
+ * Also supports a simplified format: just the hunk lines without file headers.
+ */
+export function toolApplyPatch(args: string, cwd: string): ToolOutput {
+  try {
+    const sep = args.indexOf('\n---\n');
+    if (sep === -1) {
+      // Try simplified format: "filepath\ndiff content"
+      const nlIdx = args.indexOf('\n');
+      if (nlIdx === -1) {
+        return { success: false, output: 'formato: filepath\n---\n<unified diff>' };
+      }
+      const filePath = args.slice(0, nlIdx).trim();
+      const diffContent = args.slice(nlIdx + 1).trim();
+      return applyUnifiedDiff(filePath, diffContent, cwd);
+    }
+
+    const filePath = args.slice(0, sep).trim();
+    const diffContent = args.slice(sep + 5).trim();
+    return applyUnifiedDiff(filePath, diffContent, cwd);
+  } catch (e: any) {
+    return { success: false, output: `apply_patch error: ${e.message}` };
+  }
+}
+
+function applyUnifiedDiff(filePath: string, diffContent: string, cwd: string): ToolOutput {
+  const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
+  if (!fs.existsSync(resolved)) {
+    // Create new file from diff (all lines are additions)
+    const lines = diffContent.split('\n');
+    const additions: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        additions.push(line.slice(1));
+      }
+    }
+    if (additions.length === 0) {
+      return { success: false, output: `arquivo nao existe e diff nao tem adicoes: ${filePath}` };
+    }
+    const dir = path.dirname(resolved);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(resolved, additions.join('\n'), 'utf8');
+    return { success: true, output: `${filePath} criado (${additions.length} linhas)` };
+  }
+
+  const original = fs.readFileSync(resolved, 'utf8');
+  const originalLines = original.split('\n');
+  const diffLines = diffContent.split('\n');
+
+  // Parse hunks from unified diff
+  const hunks: { oldStart: number; oldCount: number; newStart: number; newCount: number; lines: string[] }[] = [];
+  let currentHunk: typeof hunks[0] | null = null;
+
+  for (const line of diffLines) {
+    const hunkHeader = line.match(/^@@\s*-(\d+)(?:,(\d+))?\s*\+(\d+)(?:,(\d+))?\s*@@/);
+    if (hunkHeader) {
+      if (currentHunk) hunks.push(currentHunk);
+      currentHunk = {
+        oldStart: parseInt(hunkHeader[1], 10),
+        oldCount: hunkHeader[2] ? parseInt(hunkHeader[2], 10) : 1,
+        newStart: parseInt(hunkHeader[3], 10),
+        newCount: hunkHeader[4] ? parseInt(hunkHeader[4], 10) : 1,
+        lines: [],
+      };
+    } else if (currentHunk && (line.startsWith('+') || line.startsWith('-') || line.startsWith(' '))) {
+      currentHunk.lines.push(line);
+    }
+  }
+  if (currentHunk) hunks.push(currentHunk);
+
+  if (hunks.length === 0) {
+    return { success: false, output: 'nenhum hunk valido encontrado no diff' };
+  }
+
+  // Apply hunks in reverse order to preserve line numbers
+  const result = [...originalLines];
+  for (let h = hunks.length - 1; h >= 0; h--) {
+    const hunk = hunks[h];
+    const oldStart = hunk.oldStart - 1; // 0-indexed
+
+    // Verify context matches
+    let contextIdx = 0;
+    for (const line of hunk.lines) {
+      if (line.startsWith(' ')) {
+        const origIdx = oldStart + contextIdx;
+        if (origIdx < originalLines.length && originalLines[origIdx] !== line.slice(1)) {
+          return {
+            success: false,
+            output: `contexto nao confere na linha ${origIdx + 1}: esperado "${line.slice(1)}"`,
+          };
+        }
+        contextIdx++;
+      }
+    }
+
+    // Build replacement
+    const before = result.slice(0, oldStart);
+    const after = result.slice(oldStart + hunk.oldCount);
+    const replacement: string[] = [];
+    for (const line of hunk.lines) {
+      if (line.startsWith('+')) {
+        replacement.push(line.slice(1));
+      } else if (line.startsWith(' ')) {
+        replacement.push(line.slice(1));
+      }
+      // '-' lines are removed (not added to replacement)
+    }
+
+    result.splice(0, result.length, ...before, ...replacement, ...after);
+  }
+
+  const patched = result.join('\n');
+  if (patched === original) {
+    return { success: true, output: `${filePath}: patch aplicado mas resultado identico (sem mudancas)` };
+  }
+
+  // Backup original
+  const backupPath = resolved + '.bak';
+  fs.writeFileSync(backupPath, original, 'utf8');
+  fs.writeFileSync(resolved, patched, 'utf8');
+
+  const added = patched.split('\n').length - originalLines.length;
+  return {
+    success: true,
+    output: `${filePath} patcheado (+${added} linhas)\nBackup: ${path.basename(backupPath)}`,
+  };
+}
+
+// ─── skill: execute a skill by name ────────────────────────────────────────
+
+/**
+ * List available skills or show a skill's content.
+ * Format: "list" or "view <skill-name>" or "run <skill-name>"
+ */
+export function toolSkill(args: string, cwd: string): ToolOutput {
+  try {
+    const parts = args.trim().split(/\s+/);
+    const action = parts[0] || 'list';
+    const skillName = parts.slice(1).join(' ');
+
+    if (action === 'list') {
+      const { listSkills: listAllSkills } = require('./skills');
+      const result = listAllSkills();
+      return result;
+    }
+
+    if (action === 'view' && skillName) {
+      const { viewSkill } = require('./skills');
+      const result = viewSkill(skillName);
+      return result;
+    }
+
+    if (action === 'run' && skillName) {
+      const { viewSkill } = require('./skills');
+      const result = viewSkill(skillName);
+      if (!result.success) return result;
+      // Return skill content for the LLM to follow
+      return { success: true, output: `=== SKILL: ${skillName} ===\n${result.output}` };
+    }
+
+    return { success: false, output: 'formato: skill list | skill view <name> | skill run <name>' };
+  } catch (e: any) {
+    return { success: false, output: `skill error: ${e.message}` };
+  }
+}
+
+// ─── todowrite: task management (Grok Build style) ─────────────────────────
+
+interface TodoItem {
+  id: number;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'high' | 'medium' | 'low';
+}
+
+const TODOS_FILE = path.join(ENGINE_PKG, '.maniac-todos.json');
+
+function loadTodos(): TodoItem[] {
+  try {
+    if (fs.existsSync(TODOS_FILE)) {
+      return JSON.parse(fs.readFileSync(TODOS_FILE, 'utf8'));
+    }
+  } catch {}
+  return [];
+}
+
+function saveTodos(todos: TodoItem[]): void {
+  fs.writeFileSync(TODOS_FILE, JSON.stringify(todos, null, 2), 'utf8');
+}
+
+/**
+ * Manage task lists. Format:
+ *   add <content> [--priority high|medium|low]
+ *   update <id> <status>   (pending|in_progress|completed|cancelled)
+ *   list [status]
+ *   clear
+ */
+export function toolTodowrite(args: string, _cwd: string): ToolOutput {
+  try {
+    const todos = loadTodos();
+    const parts = args.trim().split(/\s+/);
+    const action = parts[0] || 'list';
+
+    if (action === 'add') {
+      const priorityMatch = args.match(/--priority\s+(high|medium|low)/i);
+      const priority = (priorityMatch?.[1] || 'medium') as TodoItem['priority'];
+      const content = args
+        .replace(/^add\s+/, '')
+        .replace(/--priority\s+\w+/i, '')
+        .trim();
+      if (!content) return { success: false, output: 'uso: todo add <content> [--priority high|medium|low]' };
+
+      const nextId = todos.length > 0 ? Math.max(...todos.map(t => t.id)) + 1 : 1;
+      todos.push({ id: nextId, content, status: 'pending', priority });
+      saveTodos(todos);
+      return { success: true, output: `TODO #${nextId} adicionado: ${content}` };
+    }
+
+    if (action === 'update' || action === 'done' || action === 'status') {
+      const id = parseInt(parts[1], 10);
+      const status = (parts[2] || (action === 'done' ? 'completed' : '')) as TodoItem['status'];
+      if (!id || !status) return { success: false, output: 'uso: todo update <id> <pending|in_progress|completed|cancelled>' };
+
+      const todo = todos.find(t => t.id === id);
+      if (!todo) return { success: false, output: `TODO #${id} nao encontrado` };
+      todo.status = status;
+      saveTodos(todos);
+      return { success: true, output: `TODO #${id} → ${status}: ${todo.content}` };
+    }
+
+    if (action === 'list' || action === 'ls') {
+      const filter = parts[1] as TodoItem['status'] | undefined;
+      const filtered = filter ? todos.filter(t => t.status === filter) : todos;
+      if (!filtered.length) {
+        return { success: true, output: filter ? `Nenhum TODO com status "${filter}"` : ' Lista de TODOs vazia' };
+      }
+      const statusIcons: Record<string, string> = {
+        pending: '○',
+        in_progress: '◐',
+        completed: '●',
+        cancelled: '◌',
+      };
+      const lines = filtered.map(t =>
+        `  ${statusIcons[t.status] || '?'} #${t.id} [${t.priority}] ${t.content}`
+      );
+      return { success: true, output: `TODOs (${filtered.length}/${todos.length}):\n${lines.join('\n')}` };
+    }
+
+    if (action === 'clear') {
+      saveTodos([]);
+      return { success: true, output: 'Todos os TODOs foram removidos' };
+    }
+
+    if (action === 'remove' || action === 'rm') {
+      const id = parseInt(parts[1], 10);
+      if (!id) return { success: false, output: 'uso: todo remove <id>' };
+      const idx = todos.findIndex(t => t.id === id);
+      if (idx === -1) return { success: false, output: `TODO #${id} nao encontrado` };
+      const removed = todos.splice(idx, 1)[0];
+      saveTodos(todos);
+      return { success: true, output: `TODO #${id} removido: ${removed.content}` };
+    }
+
+    return { success: false, output: 'formato: todo add|update|list|clear|remove <args>' };
+  } catch (e: any) {
+    return { success: false, output: `todo error: ${e.message}` };
+  }
+}
+
+// ─── MCP tools management ──────────────────────────────────────────────────
+
+/**
+ * Manage MCP servers and tools.
+ * Format:
+ *   mcp list                           — list connected servers and their tools
+ *   mcp status                         — show connection status
+ *   mcp add <json>                     — add server from JSON config
+ *   mcp remove <name>                  — remove server
+ *   mcp toggle <name>                  — enable/disable server
+ *   mcp call <qualifiedName> <json>    — call an MCP tool
+ *   mcp tools                          — list all available MCP tools
+ */
+export async function toolMcp(args: string, _cwd: string): Promise<ToolOutput> {
+  try {
+    const parts = args.trim().split(/\s+/);
+    const action = parts[0] || 'list';
+
+    if (action === 'list' || action === 'ls') {
+      const {
+        getMcpServerStatus: getStatus,
+        loadMcpConfig: getConfig,
+      } = require('./mcp');
+      const cfg = getConfig();
+      const states = getStatus();
+
+      if (states.length === 0 && Object.keys(cfg.mcpServers).length === 0) {
+        return {
+          success: true,
+          output:
+            'Nenhum servidor MCP configurado.\n\n' +
+            'Adicione um em ~/.maniac/mcp.json ou use:\n' +
+            '  [TOOL:mcp] add {"name":"my-server","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/path"]}',
+        };
+      }
+
+      const lines: string[] = [];
+      for (const [name, srvCfg] of Object.entries(cfg.mcpServers) as [string, McpServerConfig][]) {
+        const state = states.find((s: any) => s.name === name);
+        const status = state?.status || 'disconnected';
+        const toolCount = state?.tools?.length || 0;
+        const enabled = srvCfg.enabled !== false;
+        const icon = status === 'connected' ? '●' : status === 'error' ? '✖' : '○';
+        lines.push(`  ${icon} ${name} [${status}] ${toolCount} tools${enabled ? '' : ' (disabled)'}`);
+        if (state?.error) lines.push(`    error: ${state.error}`);
+      }
+      return { success: true, output: `MCP Servers (${states.length}):\n${lines.join('\n')}` };
+    }
+
+    if (action === 'status') {
+      const { getMcpServerStatus: getStatus } = require('./mcp');
+      const states = getStatus();
+      if (!states.length) return { success: true, output: 'Nenhum servidor MCP conectado.' };
+
+      const lines = states.map((s: any) => {
+        const toolNames = s.tools.map((t: any) => t.name).join(', ');
+        return `  ${s.name}: ${s.status} (${s.tools.length} tools: ${toolNames || 'none'})`;
+      });
+      return { success: true, output: `MCP Status:\n${lines.join('\n')}` };
+    }
+
+    if (action === 'tools') {
+      const { listMcpTools } = require('./mcp');
+      const tools = listMcpTools();
+      if (!tools.length) return { success: true, output: 'Nenhuma tool MCP disponivel.' };
+
+      const lines = tools.map((t: any) => `  ${t.qualifiedName}: ${t.description.slice(0, 80)}`);
+      return { success: true, output: `MCP Tools (${tools.length}):\n${lines.join('\n')}` };
+    }
+
+    if (action === 'add') {
+      const json = args.trim().slice(3).trim();
+      if (!json) {
+        return {
+          success: false,
+          output:
+            'formato: mcp add {"name":"server","command":"npx","args":["-y","package"]}\n' +
+            'ou: mcp add name command [args...]',
+        };
+      }
+
+      const { addMcpServer } = require('./mcp');
+      let config;
+      try {
+        config = JSON.parse(json);
+      } catch {
+        // Try "name command args..." format
+        const p = args.trim().split(/\s+/);
+        if (p.length >= 3) {
+          config = {
+            name: p[1],
+            command: p[2],
+            args: p.slice(3),
+          };
+        } else {
+          return { success: false, output: 'JSON invalido ou formato incorreto' };
+        }
+      }
+
+      if (!config.name || !config.command) {
+        return { success: false, output: '"name" e "command" sao obrigatorios' };
+      }
+
+      const state = await addMcpServer(config);
+      if (state.status === 'connected') {
+        return {
+          success: true,
+          output: `${state.name} conectado! ${state.tools.length} tools descobertas: ${state.tools.map((t: any) => t.name).join(', ')}`,
+        };
+      }
+      return { success: false, output: `Falha ao conectar ${state.name}: ${state.error}` };
+    }
+
+    if (action === 'remove' || action === 'rm') {
+      const name = parts[1];
+      if (!name) return { success: false, output: 'formato: mcp remove <name>' };
+
+      const { removeMcpServer } = require('./mcp');
+      await removeMcpServer(name);
+      return { success: true, output: `Servidor MCP "${name}" removido.` };
+    }
+
+    if (action === 'toggle') {
+      const name = parts[1];
+      if (!name) return { success: false, output: 'formato: mcp toggle <name>' };
+
+      const { toggleMcpServer } = require('./mcp');
+      const result = await toggleMcpServer(name);
+      if (!result.state) {
+        return { success: true, output: `Servidor MCP "${name}" desabilitado/desconectado.` };
+      }
+      return {
+        success: true,
+        output: `Servidor MCP "${name}" ${result.enabled ? 'habilitado' : 'desabilitado'}: ${result.state.status}`,
+      };
+    }
+
+    if (action === 'call') {
+      const toolName = parts[1];
+      const jsonArg = args.trim().slice(action.length + toolName.length + 1).trim();
+      if (!toolName) return { success: false, output: 'formato: mcp call <toolName> [jsonArgs]' };
+
+      let callArgs: Record<string, unknown> = {};
+      if (jsonArg) {
+        try {
+          callArgs = JSON.parse(jsonArg);
+        } catch {
+          return { success: false, output: 'Argumentos devem ser JSON valido' };
+        }
+      }
+
+      const { callMcpTool } = require('./mcp');
+      return await callMcpTool(toolName, callArgs);
+    }
+
+    return { success: false, output: 'formato: mcp list|status|tools|add|remove|toggle|call <args>' };
+  } catch (e: any) {
+    return { success: false, output: `mcp error: ${e.message}` };
+  }
+}
+
+export async function toolPlugin(args: string, _cwd: string): Promise<ToolOutput> {
+  try {
+    const parts = args.trim().split(/\s+/);
+    const action = parts[0] || 'list';
+
+    if (action === 'list' || action === 'ls') {
+      const { listPlugins } = require('./plugins');
+      return listPlugins();
+    }
+
+    if (action === 'search') {
+      const query = parts.slice(1).join(' ');
+      if (!query) return { success: false, output: 'formato: plugin search <query>' };
+      const { searchPlugins } = require('./plugins');
+      return searchPlugins(query);
+    }
+
+    if (action === 'install') {
+      const name = parts[1];
+      if (!name) return { success: false, output: 'formato: plugin install <name>' };
+      const { installPlugin } = require('./plugins');
+      return await installPlugin(name);
+    }
+
+    if (action === 'remove' || action === 'rm') {
+      const name = parts[1];
+      if (!name) return { success: false, output: 'formato: plugin remove <name>' };
+      const { uninstallPlugin } = require('./plugins');
+      return uninstallPlugin(name);
+    }
+
+    if (action === 'toggle') {
+      const name = parts[1];
+      if (!name) return { success: false, output: 'formato: plugin toggle <name>' };
+      const { togglePlugin } = require('./plugins');
+      return togglePlugin(name);
+    }
+
+    return { success: false, output: `Ação de plugin desconhecida: ${action}` };
+  } catch (e: any) {
+    return { success: false, output: `Erro ao gerenciar plugins: ${e.message}` };
+  }
+}
+
+export function toolAcp(args: string, _cwd: string): ToolOutput {
+  const parts = args.trim().split(/\s+/);
+  const action = parts[0] || 'status';
+
+  const { startAcpServer, stopAcpServer, getAcpStatus } = require('./acp');
+
+  switch (action) {
+    case 'start':
+      return startAcpServer();
+    case 'stop':
+      return stopAcpServer();
+    case 'status':
+      return getAcpStatus();
+    default:
+      return { success: false, output: 'formato: acp start|stop|status' };
+  }
+}
+
+export function toolSandbox(args: string, _cwd: string): ToolOutput {
+  const { handleSandboxTool } = require('./sandbox');
+  return handleSandboxTool(args);
+}
+
 export async function toolSendTelegram(args: string): Promise<ToolOutput> {
   try {
     const { tgApiCall } = require('./telegram/api');
@@ -1105,6 +1695,21 @@ export async function executeToolCall(
       const { applyProposal } = require('./proposals');
       return await applyProposal(command.trim(), cwd);
     }
+    case 'apply_patch':
+      return toolApplyPatch(command, cwd);
+    case 'skill':
+      return toolSkill(command, cwd);
+    case 'todo':
+    case 'todowrite':
+      return toolTodowrite(command, cwd);
+    case 'mcp':
+      return await toolMcp(command, cwd);
+    case 'plugin':
+      return await toolPlugin(command, cwd);
+    case 'acp':
+      return toolAcp(command, cwd);
+    case 'sandbox':
+      return toolSandbox(command, cwd);
     default:
       return { success: false, output: `ferramenta desconhecida: ${type}` };
   }

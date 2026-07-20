@@ -24,6 +24,7 @@ Usage:
   maniac -p "prompt"         headless NDJSON stream
   maniac -p "..." --yolo     headless, auto-approve tools
   maniac -p "..." -i x.png   attach image (routed via Groq vision)
+  maniac -p "..." --output-format text   plain text output (final answer only)
   maniac --resume [id]       resume session (TUI)
   maniac --continue          resume latest session for cwd
   maniac --no-auto-resume    skip crash auto-resume on startup
@@ -32,12 +33,23 @@ Interactive:
   Shift+Tab   cycle mode (chat/ask/plan)
   Ctrl+T      cycle permission mode
   Alt+V       attach clipboard image as [imageN] (also /paste; Ctrl+V works
-              in terminals that don't intercept it for text paste)
+              in terminals that intercept it for text paste)
   /help       list slash commands
   /sentinel   Bugbot review (uncommitted); /sentinel branch vs main
   /proposals  list improvement proposals
   /approve id apply a proposal
   /reject id  reject a proposal
+
+Headless output formats:
+  --output-format ndjson       all events as JSON lines (default)
+  --output-format text         plain text, only the final answer
+
+Tools (Grok Build enhanced):
+  read "path [offset [limit]]"   read file with line range
+  grep "pattern [path]"          search (uses ripgrep if installed)
+  apply_patch "path\\n---\\n<diff>"   apply unified diff
+  skill list|view|run <name>     manage skills
+  todo add|update|list|clear     task management
 
 Telegram requires TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_IDS
 (or TELEGRAM_ALLOWED_USERNAMES). Dangerous tools ask via inline buttons.
@@ -101,6 +113,7 @@ async function main() {
       history,
       cwd,
       images: args.images,
+      outputFormat: args.outputFormat,
     });
     process.exit(0);
   }

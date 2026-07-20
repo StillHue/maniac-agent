@@ -48,3 +48,45 @@ export {
 } from './sentinel';
 export type { SentinelScope, SentinelRunOptions } from './sentinel';
 export { chatWithProvider } from './opencode';
+export {
+  loadMcpConfig,
+  saveMcpConfig,
+  getMcpConfigPath,
+  connectMcpServer,
+  disconnectMcpServer,
+  connectAllMcpServers,
+  disconnectAllMcpServers,
+  callMcpTool,
+  listMcpTools,
+  getMcpServerStatus,
+  findMcpTool,
+  addMcpServer,
+  removeMcpServer,
+  toggleMcpServer,
+} from './mcp';
+export type { McpServerConfig, McpConfig, McpServerState, McpToolInfo } from './mcp';
+export {
+  loadPluginsConfig,
+  savePluginsConfig,
+  listPlugins,
+  installPlugin,
+  uninstallPlugin,
+  togglePlugin,
+  searchPlugins,
+} from './plugins';
+export type { PluginMeta, PluginEntry, PluginsConfig } from './plugins';
+export {
+  startAcpServer,
+  stopAcpServer,
+  isAcpRunning,
+  getAcpStatus,
+} from './acp';
+export type { JsonRpcRequest, JsonRpcResponse, AcpServerOptions } from './acp';
+export {
+  sandboxExec,
+  configureSandbox,
+  getSandboxConfig,
+  handleSandboxTool,
+  sandboxTool,
+} from './sandbox';
+export type { SandboxConfig, SandboxResult } from './sandbox';
