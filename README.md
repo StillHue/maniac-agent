@@ -1,4 +1,4 @@
-<p align="center">
+<div align="center">
 <pre>
 ███╗   ███╗ █████╗ ███╗   ██╗██╗ █████╗  ██████╗
 ████╗ ████║██╔══██╗████╗  ██║██║██╔══██╗██╔════╝
@@ -24,7 +24,7 @@
 
          ✦ the 'what the hell, let's try it' agent ✦
 </pre>
-</p>
+</div>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml)
