@@ -26,8 +26,10 @@ export function loadPermissionConfig(): PermissionConfig {
         rules: Array.isArray(raw.rules) ? (raw.rules as PermissionRule[]) : [],
       };
     }
-  } catch {}
-  return { ...DEFAULT_PERMISSION_CONFIG, rules: [] };
+  } catch (e) {
+    console.debug('[permissions] loadPermissionConfig:', e);
+  }
+  return { mode: 'default', rules: [] };
 }
 
 export function savePermissionConfig(cfg: PermissionConfig): void {
@@ -58,7 +60,9 @@ export function loadGrants(cwd: string): PermissionGrant[] {
       const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
       return Array.isArray(raw) ? raw : [];
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[permissions] loadGrants:', e);
+  }
   return [];
 }
 
@@ -77,5 +81,7 @@ export function clearGrants(cwd: string): void {
   const p = grantsPath(cwd);
   try {
     if (fs.existsSync(p)) fs.unlinkSync(p);
-  } catch {}
+  } catch (e) {
+    console.debug('[permissions] clearGrants unlink:', e);
+  }
 }

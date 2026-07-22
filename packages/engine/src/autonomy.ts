@@ -26,7 +26,9 @@ export function loadAutonomyConfig(): AutonomyConfig {
     if (fs.existsSync(CONFIG_PATH)) {
       return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
     }
-  } catch {}
+  } catch (e) {
+    console.warn('[autonomy] loadAutonomyConfig falhou:', e);
+  }
   return { ...DEFAULTS };
 }
 

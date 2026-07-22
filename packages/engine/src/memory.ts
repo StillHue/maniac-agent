@@ -28,7 +28,9 @@ function atomicWrite(filePath: string, content: string): void {
 function readOrInit(filePath: string, label: string): string {
   try {
     if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf8');
-  } catch {}
+  } catch (e) {
+    console.debug('[memory] readOrInit falhou:', e);
+  }
   const header = `# ${label}\n\n`;
   atomicWrite(filePath, header);
   return header;
@@ -56,7 +58,9 @@ export function saveMemory(content: string): { success: boolean; output: string 
   try {
     if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
     let existing = '';
-    try { existing = fs.readFileSync(MEMORY_FILE, 'utf8'); } catch {}
+    try { existing = fs.readFileSync(MEMORY_FILE, 'utf8'); } catch (e) {
+      console.debug('[memory] appendMemory falhou:', e);
+    }
     const newEntry = `\n- ${content.replace(/^[-*]\s*/, '')}`;
     const updated = existing + newEntry;
     const truncated = updated.length > MEMORY_CHAR_LIMIT
@@ -73,7 +77,9 @@ export function saveUserProfile(content: string): { success: boolean; output: st
   try {
     if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
     let existing = '';
-    try { existing = fs.readFileSync(USER_FILE, 'utf8'); } catch {}
+    try { existing = fs.readFileSync(USER_FILE, 'utf8'); } catch (e) {
+      console.debug('[memory] appendUserContext falhou:', e);
+    }
     const newEntry = `\n- ${content.replace(/^[-*]\s*/, '')}`;
     const updated = existing + newEntry;
     const truncated = updated.length > USER_CHAR_LIMIT

@@ -18,6 +18,8 @@ export const PROVIDER_ENV_KEY: Record<string, string> = {
   together: 'TOGETHER_API_KEY',
   nvidia: 'NVIDIA_API_KEY',
   opencode: 'OPENCODE_API_KEY',
+  kilo: 'KILO_GATEWAY_API_KEY',
+  cohere: 'COHERE_API_KEY',
 };
 
 /** Sensible defaults when the user only names a provider. */
@@ -32,6 +34,8 @@ export const DEFAULT_MODELS: Record<string, string> = {
   together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
   nvidia: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
   opencode: 'grok-build-0.1',
+  kilo: 'kilo-auto/free',
+  cohere: 'command-r-plus',
   ollama: 'llama3.2',
   auto: 'auto',
   hermes: 'hermes',
@@ -57,8 +61,11 @@ const ALIASES: Record<string, string> = {
   nvidia: 'nvidia',
   nemotron: 'nvidia',
   opencode: 'opencode',
+  kilo: 'kilo',
   ollama: 'ollama',
   local: 'ollama',
+  cohere: 'cohere',
+  command: 'cohere',
   auto: 'auto',
   hermes: 'hermes',
   custom: 'custom',
@@ -184,7 +191,9 @@ export function applyProviderSwitch(provider: string, model?: string): ApplyProv
   try {
     const { setActiveProvider } = require('./opencode');
     setActiveProvider({ provider, model: resolvedModel });
-  } catch {}
+  } catch (e) {
+    console.debug('[provider-switch] Erro ao sincronizar activeProvider:', e);
+  }
   return {
     success: true,
     output: `Modelo alterado: ${cfg.provider}/${cfg.model}`,

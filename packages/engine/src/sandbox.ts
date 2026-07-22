@@ -56,9 +56,16 @@ export function sandboxExec(command: string, cwd?: string): Promise<SandboxResul
     const shell = isWin ? 'powershell.exe' : '/bin/sh';
     const shellArgs = isWin ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
 
+    const SAFE_ENV_KEYS = new Set([
+      'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
+      'SystemRoot', 'windir', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'NODE_PATH',
+    ]);
+    const safeEnv: Record<string, string> = {};
+    for (const key of SAFE_ENV_KEYS) { if (process.env[key]) safeEnv[key] = process.env[key]!; }
+
     const child = spawn(shell, shellArgs, {
       cwd: resolvedCwd,
-      env: { ...process.env },
+      env: safeEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });

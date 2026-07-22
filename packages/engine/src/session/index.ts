@@ -97,11 +97,9 @@ function touchSummary(cwd: string, sessionId: string, opts?: { numMessagesDelta?
     if (opts?.numMessagesDelta) summary.numMessages += opts.numMessagesDelta;
     if (opts?.title) summary.title = opts.title;
     fs.writeFileSync(p, JSON.stringify(summary, null, 2));
-  } catch {}
-}
-
-export function renameSession(cwd: string, sessionId: string, title: string): void {
-  touchSummary(cwd, sessionId, { title });
+  } catch (e) {
+    console.debug('[session] touchSummary:', e);
+  }
 }
 
 export function loadSessionMessages(cwd: string, sessionId: string): ChatMessage[] {
@@ -129,7 +127,9 @@ export function loadSessionSummary(cwd: string, sessionId: string): SessionSumma
   try {
     const p = path.join(sessionDir(cwd, sessionId), 'summary.json');
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch {}
+  } catch (e) {
+    console.debug('[session] loadSessionSummary:', e);
+  }
   return null;
 }
 

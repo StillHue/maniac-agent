@@ -54,7 +54,9 @@ export function loadMcpConfig(): McpConfig {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
       return JSON.parse(raw);
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[MCP] loadMcpConfig:', e);
+  }
   return DEFAULT_CONFIG;
 }
 
@@ -96,10 +98,23 @@ export async function connectMcpServer(config: McpServerConfig): Promise<McpServ
   servers.set(name, state);
 
   try {
+    // Whitelist approach: only pass known-safe env vars + MCP-specific ones
+    const SAFE_ENV_KEYS = new Set([
+      'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
+      'SystemRoot', 'windir', 'SHELL', 'TERM', 'LANG', 'LC_ALL',
+      'NODE_PATH',
+    ]);
+    const safeEnv: Record<string, string> = {};
+    for (const key of SAFE_ENV_KEYS) {
+      if (process.env[key]) safeEnv[key] = process.env[key]!;
+    }
+    // Only add config.env keys explicitly (not process.env leak)
+    if (config.env) Object.assign(safeEnv, config.env);
+
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args || [],
-      env: { ...process.env, ...config.env } as Record<string, string>,
+      env: safeEnv as Record<string, string>,
       cwd: config.cwd,
     });
 

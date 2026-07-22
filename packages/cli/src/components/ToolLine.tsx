@@ -1,64 +1,71 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { ACCENT } from '../theme.js';
+import { ACCENT, FAIL, MUTED, OK, TOOL } from '../theme.js';
 import type { ToolCallView } from '../ui-types.js';
 
-/** Friendly verbs instead of raw tool names: [while running, when done]. */
 const TOOL_VERBS: Record<string, [string, string]> = {
-  ls: ['Searching', 'Searched'],
-  glob: ['Searching', 'Searched'],
-  grep: ['Searching', 'Searched'],
-  read: ['Reading', 'Read'],
-  write: ['Writing', 'Wrote'],
-  edit: ['Editing', 'Edited'],
-  source_edit: ['Editing', 'Edited'],
-  system_prompt_edit: ['Editing', 'Edited'],
-  exec: ['Running', 'Ran'],
-  http_request: ['Fetching', 'Fetched'],
-  spawn_terminal: ['Launching', 'Launched'],
-  rebuild_engine: ['Rebuilding', 'Rebuilt'],
-  model_switch: ['Switching', 'Switched'],
-  memory_save: ['Remembering', 'Remembered'],
-  memory_read: ['Recalling', 'Recalled'],
-  profile_save: ['Remembering', 'Remembered'],
-  skill_view: ['Reading', 'Read'],
-  skill_create: ['Creating', 'Created'],
-  tool_create: ['Creating', 'Created'],
-  curator_run: ['Tidying', 'Tidied'],
-  curator_status: ['Checking', 'Checked'],
-  custom_tools_list: ['Checking', 'Checked'],
-  delegate: ['Delegating', 'Delegated'],
-  vision: ['Looking', 'Looked'],
-  send_telegram: ['Messaging', 'Messaged'],
-  telegram_list_chats: ['Checking', 'Checked'],
-  server_start: ['Starting', 'Started'],
-  server_status: ['Checking', 'Checked'],
-  self_restart: ['Restarting', 'Restarted'],
+  ls: ['search', 'searched'],
+  glob: ['search', 'searched'],
+  grep: ['search', 'searched'],
+  read: ['read', 'read'],
+  write: ['write', 'wrote'],
+  edit: ['edit', 'edited'],
+  source_edit: ['edit', 'edited'],
+  system_prompt_edit: ['edit', 'edited'],
+  exec: ['exec', 'ran'],
+  http_request: ['http', 'fetched'],
+  spawn_terminal: ['spawn', 'spawned'],
+  rebuild_engine: ['rebuild', 'rebuilt'],
+  model_switch: ['model', 'switched'],
+  memory_save: ['memory', 'saved'],
+  memory_read: ['memory', 'recalled'],
+  profile_save: ['profile', 'saved'],
+  skill_view: ['skill', 'read'],
+  skill_create: ['skill', 'created'],
+  tool_create: ['tool', 'created'],
+  curator_run: ['curator', 'ran'],
+  curator_status: ['curator', 'checked'],
+  custom_tools_list: ['tools', 'listed'],
+  delegate: ['delegate', 'delegated'],
+  vision: ['vision', 'saw'],
+  send_telegram: ['telegram', 'sent'],
+  telegram_list_chats: ['telegram', 'listed'],
+  server_start: ['server', 'started'],
+  server_status: ['server', 'checked'],
+  self_restart: ['restart', 'restarted'],
+  apply_patch: ['patch', 'patched'],
 };
 
-function toolVerb(tool: string, done: boolean): string {
+function toolLabel(tool: string, done: boolean): string {
   const pair = TOOL_VERBS[tool];
   if (pair) return done ? pair[1] : pair[0];
-  // MCP tools look like "server/tool_name"
-  if (tool.includes('/')) return done ? 'Called' : 'Calling';
-  return done ? 'Worked' : 'Working';
+  if (tool.includes('/')) return done ? 'called' : 'call';
+  return done ? 'done' : 'run';
 }
 
 export function formatToolArgs(tool: string, args: unknown): string {
   const raw = typeof args === 'string' ? args : JSON.stringify(args ?? '');
-  if (['read', 'write', 'edit', 'source_edit'].includes(tool)) {
+  if (['read', 'write', 'edit', 'source_edit', 'apply_patch'].includes(tool)) {
     const firstLine = raw.split('\n')[0].trim();
-    return firstLine.length > 60 ? firstLine.slice(0, 57) + '…' : firstLine;
+    return firstLine.length > 56 ? `${firstLine.slice(0, 53)}…` : firstLine;
   }
   if (tool === 'exec') {
     const cmd = raw.trim();
-    return cmd.length > 70 ? cmd.slice(0, 67) + '…' : cmd;
+    return cmd.length > 64 ? `${cmd.slice(0, 61)}…` : cmd;
   }
   if (tool === 'delegate') {
     const goal = raw.split('|')[0].trim();
-    return goal.length > 60 ? goal.slice(0, 57) + '…' : goal;
+    return goal.length > 56 ? `${goal.slice(0, 53)}…` : goal;
   }
-  return raw.length > 70 ? raw.slice(0, 67) + '…' : raw;
+  return raw.length > 64 ? `${raw.slice(0, 61)}…` : raw;
+}
+
+function statusGlyph(tc: ToolCallView, spinnerFrame?: string): React.ReactNode {
+  if (!tc.done) {
+    return <Text color={TOOL}>{spinnerFrame || '⠋'}</Text>;
+  }
+  if (tc.success) return <Text color={OK}>✓</Text>;
+  return <Text color={FAIL}>✗</Text>;
 }
 
 export function ToolLine({
@@ -70,38 +77,77 @@ export function ToolLine({
   showOutput?: boolean;
   spinnerFrame?: string;
 }) {
-  const verb = toolVerb(tc.tool, tc.done);
+  const verb = toolLabel(tc.tool, tc.done);
   const label = formatToolArgs(tc.tool, tc.args);
+  const name = tc.tool.includes('/') ? tc.tool.split('/').pop() || tc.tool : tc.tool;
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={0}>
       <Box>
-        <Text>
-          {'    '}
-          {tc.done ? (
-            <Text color={tc.success ? undefined : 'red'} dimColor={tc.success}>
-              {tc.success ? '✓' : '✗'}
-            </Text>
-          ) : (
-            <Text color={ACCENT}>{spinnerFrame || '⠋'}</Text>
-          )}
-          {'  '}
-          <Text dimColor={tc.done}>{verb}</Text>
-          {label ? <Text dimColor>{'  '}{label}</Text> : null}
-        </Text>
+        <Text color={MUTED}>{'  │ '}</Text>
+        {statusGlyph(tc, spinnerFrame)}
+        <Text color={TOOL}>{` ${name.padEnd(10).slice(0, 10)}`}</Text>
+        <Text dimColor>{` ${verb}`}</Text>
+        {label ? <Text dimColor>{`  ${label}`}</Text> : null}
       </Box>
       {showOutput && tc.done && tc.output ? (
-        <Box paddingLeft={6}>
+        <Box>
+          <Text color={MUTED}>{'  │   '}</Text>
           <Text dimColor>
-            {tc.output.replace(/\s+/g, ' ').trim().slice(0, 100)}
-            {tc.output.length > 100 ? '…' : ''}
+            {tc.output.replace(/\s+/g, ' ').trim().slice(0, 88)}
+            {tc.output.length > 88 ? '…' : ''}
           </Text>
         </Box>
       ) : null}
       {!tc.done && tc.output ? (
-        <Box paddingLeft={6}>
-          <Text dimColor>{tc.output.replace(/\s+/g, ' ').trim().slice(-80)}</Text>
+        <Box>
+          <Text color={MUTED}>{'  │   '}</Text>
+          <Text dimColor>{tc.output.replace(/\s+/g, ' ').trim().slice(-72)}</Text>
         </Box>
       ) : null}
+    </Box>
+  );
+}
+
+export function ToolSection({
+  tools,
+  showOutput,
+  spinnerFrame,
+  live,
+}: {
+  tools: ToolCallView[];
+  showOutput?: boolean;
+  spinnerFrame?: string;
+  live?: boolean;
+}) {
+  if (tools.length === 0) return null;
+  const pending = tools.filter((t) => !t.done).length;
+  const failed = tools.filter((t) => t.done && !t.success).length;
+  const title = live
+    ? pending > 0
+      ? `tools  ·  ${pending} running`
+      : `tools  ·  ${tools.length}`
+    : `tools  ·  ${tools.length}${failed ? `  ·  ${failed} failed` : ''}`;
+
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      <Box>
+        <Text color={MUTED}>{'  ┌ '}</Text>
+        <Text color={TOOL} bold>
+          {title}
+        </Text>
+      </Box>
+      {tools.map((tc, i) => (
+        <ToolLine key={i} tc={tc} showOutput={showOutput} spinnerFrame={spinnerFrame} />
+      ))}
+      <Box>
+        <Text color={MUTED}>{'  └'}</Text>
+        {live && pending > 0 ? (
+          <Text color={ACCENT}>{` ${spinnerFrame || '·'} working`}</Text>
+        ) : (
+          <Text color={MUTED}>{'─'}</Text>
+        )}
+      </Box>
     </Box>
   );
 }

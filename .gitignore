@@ -4,6 +4,7 @@ node_modules/
 .yarn/unplugged
 .yarn/build-state.yml
 .pnp.*
+package-lock.json
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 .env

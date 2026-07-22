@@ -1,6 +1,7 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn, spawnSync } from 'child_process';
 import { loadCustomTools, saveCustomTools } from './tools-persistence';
 import {
   immortalitySummary, getImmortalityStatus, checkResume,
@@ -73,12 +74,41 @@ const BUILD_CMD = process.platform === 'win32' ? 'npm.cmd run build' : 'npm run 
 
 let customTools: Map<string, RegisteredTool> = new Map();
 
+/** Validates custom tool code before loading via new Function. Returns null if safe, error string if dangerous. */
+function validateToolCode(code: string): string | null {
+  // Decode common escape tricks so denylist cannot be bypassed with \u0046unction etc.
+  const decoded = code
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/['"]\s*\+\s*['"]/g, '');
+  const blocked = [
+    'require', 'process.env', 'process.binding', 'process.chdir', 'process.kill',
+    'process.exit', 'process.abort', 'globalThis', 'import(', '__dirname', '__filename',
+    'child_process', 'execsync', 'spawnsync', 'exec(', 'eval(', 'function(',
+    'this[', 'return this', '.constructor', 'constructor[', 'constructor(',
+    'reflect.', 'proxy(', 'webview', 'xmldocument',
+  ];
+  const lower = decoded.toLowerCase();
+  for (const b of blocked) {
+    if (lower.includes(b.toLowerCase())) {
+      return `Bloqueado: uso de "${b}" nao e permitido em tools customizadas`;
+    }
+  }
+  return null;
+}
+
 // Carrega ferramentas customizadas persistidas do disco
 (function initCustomTools() {
+  if (process.env.MANIAC_ALLOW_CUSTOM_TOOLS !== '1') return;
   const persisted = loadCustomTools();
   if (!Array.isArray(persisted)) return;
   for (const t of persisted) {
     try {
+      const err = validateToolCode(t.handler);
+      if (err) {
+        console.warn(`[tools] Tool persistida "${t.name}" bloqueada: ${err}`);
+        continue;
+      }
       const handler = new Function('args', 'cwd', t.handler) as (args: string, cwd: string) => ToolOutput;
       customTools.set(t.name, { name: t.name, description: t.description, handler });
     } catch (e) {
@@ -111,6 +141,11 @@ export function reloadCustomTools(): void {
   const persisted = loadCustomTools();
   for (const t of persisted) {
     try {
+      const err = validateToolCode(t.handler);
+      if (err) {
+        console.warn(`[tools] Tool "${t.name}" bloqueada no reload: ${err}`);
+        continue;
+      }
       const handler = new Function('args', 'cwd', t.handler) as (args: string, cwd: string) => ToolOutput;
       if (!customTools.has(t.name)) {
         customTools.set(t.name, { name: t.name, description: t.description, handler });
@@ -265,34 +300,31 @@ export function toolGrep(pattern: string, searchPath: string | null, cwd: string
 
     // Fast path: use ripgrep when available
     if (isRgAvailable()) {
-      try {
-        const args = [
-          '--no-heading',
-          '--line-number',
-          '--color=never',
-          '--max-count=60',
-          '--max-depth=8',
-          '-e', pattern,
-          root,
-        ];
-        const result = execSync(`rg ${args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ')}`, {
-          cwd: root,
-          encoding: 'utf8',
-          timeout: 15_000,
-          windowsHide: true,
-          maxBuffer: 256 * 1024,
-        });
-        const lines = result.trim().split('\n').filter(Boolean).slice(0, 60);
+      const args = [
+        '--no-heading',
+        '--line-number',
+        '--color=never',
+        '--max-count=60',
+        '--max-depth=8',
+        '-e', pattern,
+        root,
+      ];
+      const result = spawnSync('rg', args, {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 15_000,
+        windowsHide: true,
+        maxBuffer: 256 * 1024,
+      });
+      if (result.status === 0) {
+        const lines = result.stdout.trim().split('\n').filter(Boolean).slice(0, 60);
         return {
           success: true,
           output: lines.length ? lines.join('\n') : '(sem resultados)',
         };
-      } catch (rgErr: any) {
-        // rg exits 1 when no matches — that's not an error
-        if (rgErr.status === 1) {
-          return { success: true, output: '(sem resultados)' };
-        }
-        // Fall through to native on other errors
+      }
+      if (result.status === 1) {
+        return { success: true, output: '(sem resultados)' };
       }
     }
 
@@ -546,7 +578,7 @@ export async function toolWindowsExec(command: string): Promise<ToolOutput> {
   }
 }
 
-const BRAIN_VAULT = process.env.MANIAC_BRAIN_VAULT || path.join(require('os').homedir(), '.maniac', 'brain');
+const BRAIN_VAULT = process.env.MANIAC_BRAIN_VAULT || path.join(os.homedir(), '.maniac', 'brain');
 
 export function toolBrainRead(args: string): ToolOutput {
   try {
@@ -690,6 +722,13 @@ export function toolSourceEdit(filePath: string, oldString: string, newString: s
 }
 
 export function toolCreateTool(args: string, cwd: string): ToolOutput {
+  if (process.env.MANIAC_ALLOW_CUSTOM_TOOLS !== '1') {
+    return {
+      success: false,
+      output:
+        'tool_create desabilitado por padrao (risco de RCE via new Function). Defina MANIAC_ALLOW_CUSTOM_TOOLS=1 para habilitar em ambientes confiaveis.',
+    };
+  }
   try {
     const pipeIdx = args.indexOf('|');
     const braceIdx = args.indexOf('{');
@@ -709,6 +748,13 @@ export function toolCreateTool(args: string, cwd: string): ToolOutput {
       name = parts[0];
       description = parts[1];
       code = parts.slice(2).join('|');
+    }
+
+    // WARN: new Function evaluates arbitrary code from user input.
+    // Only trusted/admin users should create custom tools.
+    const codeErr = validateToolCode(code);
+    if (codeErr) {
+      return { success: false, output: codeErr };
     }
 
     const handler = new Function('args', 'cwd', code) as (args: string, cwd: string) => ToolOutput;
@@ -794,9 +840,8 @@ export function toolSpawnTerminal(args: string, cwd: string): ToolOutput {
 
     const isWin = process.platform === 'win32';
     if (isWin) {
-      const fullCmd = `${command} ${cmdArgs.join(' ')}`;
-      execSync(`start "${command}" ${fullCmd}`, { cwd, shell: 'cmd.exe', timeout: 5000 });
-      return { success: true, output: `Terminal aberto: ${fullCmd}` };
+      spawnSync('cmd.exe', ['/c', 'start', '""', command, ...cmdArgs], { cwd, shell: false, timeout: 5000, windowsHide: true });
+      return { success: true, output: `Terminal aberto: ${command} ${cmdArgs.join(' ')}` };
     }
     const child = spawn('x-terminal-emulator', ['-e', command, ...cmdArgs], {
       cwd, detached: true, stdio: 'ignore',
@@ -828,9 +873,17 @@ export function toolServerStart(args: string, cwd: string): ToolOutput {
     for (const sp of candidates) {
       if (!fs.existsSync(sp)) continue;
       const isTs = sp.endsWith('.ts');
+      const SAFE_ENV_KEYS = new Set([
+        'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
+        'SystemRoot', 'windir', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'NODE_PATH',
+      ]);
+      const safeEnv: Record<string, string> = {};
+      for (const key of SAFE_ENV_KEYS) { if (process.env[key]) safeEnv[key] = process.env[key]!; }
+      safeEnv.ARES_PORT = String(port);
+
       const child = spawn(isTs ? 'npx' : 'node', isTs ? ['tsx', sp] : [sp], {
         cwd, detached: true, stdio: 'ignore',
-        env: { ...process.env, ARES_PORT: String(port) },
+        env: safeEnv,
       });
       child.unref();
       return { success: true, output: `Servidor maniac iniciado em http://localhost:${port} (PID ${child.pid})${isTs ? ', modo tsx' : ''}` };
@@ -867,12 +920,20 @@ export function toolSelfRestart(args: string, cwd: string): ToolOutput {
 
     const script = process.argv[1];
     const execPath = process.execPath;
-    const env = { ...process.env, ARES_RESTART_REASON: reason, ARES_RESTART_COUNT: String(parseInt(process.env.ARES_RESTART_COUNT || '0', 10) + 1) };
+    const SAFE_ENV_KEYS = new Set([
+      'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
+      'SystemRoot', 'windir', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'NODE_PATH',
+    ]);
+    const env: Record<string, string> = {};
+    for (const key of SAFE_ENV_KEYS) { if (process.env[key]) env[key] = process.env[key]!; }
+    env.ARES_RESTART_REASON = reason;
+    env.ARES_RESTART_COUNT = String(parseInt(process.env.ARES_RESTART_COUNT || '0', 10) + 1);
 
     const isWin = process.platform === 'win32';
     if (isWin) {
-      const cmd = `start /B "" "${execPath}" "${script}" "${process.argv.slice(2).join('" "')}"`;
-      execSync(cmd, { cwd, shell: 'cmd.exe', env, timeout: 5000 });
+      spawnSync('cmd.exe', ['/c', 'start', '/B', '', execPath, script, ...process.argv.slice(2)], {
+        cwd, shell: false, env, timeout: 5000, windowsHide: true,
+      });
     } else {
       const child = spawn(execPath, process.argv.slice(1), {
         cwd, detached: true, stdio: 'ignore', env,

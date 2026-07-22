@@ -46,7 +46,9 @@ export function loadPluginsConfig(): PluginsConfig {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
       return JSON.parse(raw);
     }
-  } catch {}
+  } catch (e) {
+    console.warn('[plugins] loadPluginsConfig falhou:', e);
+  }
   return DEFAULT_CONFIG;
 }
 

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 
 export interface AutoRouterSlot {
   provider: string;
@@ -176,8 +177,30 @@ export const PROVIDER_DEFS: ProviderDef[] = [
     modelsParser: (d) => (d.data || []).map((m: any) => m.id).sort(),
   },
   {
+    id: 'kilo',
+    name: 'Kilo Gateway',
+    baseUrl: 'https://api.kilo.ai/api/gateway',
+    modelsEndpoint: '/models',
+    chatEndpoint: '/chat/completions',
+    authType: 'bearer',
+    requiresKey: true,
+    format: 'openai',
+    modelsParser: (d) => (d.data || []).map((m: any) => m.id).sort(),
+  },
+  {
+    id: 'cohere',
+    name: 'Cohere',
+    baseUrl: 'https://api.cohere.com/v1',
+    modelsEndpoint: '/models',
+    chatEndpoint: '/chat/completions',
+    authType: 'bearer',
+    requiresKey: true,
+    format: 'openai',
+    modelsParser: (d) => (d.data || []).map((m: any) => m.id).sort(),
+  },
+  {
     id: 'auto',
-    name: 'Auto (Grok Build → Zen free → NVIDIA)',
+    name: 'Auto (OpenCode Zen free)',
     baseUrl: '',
     modelsEndpoint: '',
     chatEndpoint: '',
@@ -189,84 +212,151 @@ export const PROVIDER_DEFS: ProviderDef[] = [
 
 const CONFIG_PATH = path.join(os.homedir(), '.maniac', 'config.json');
 
+// ─── API Key Encryption ────────────────────────────────────────────────────
+// When MANIAC_MASTER_KEY is set, API keys are encrypted at rest using AES-256-GCM.
+// Without a master key, keys are stored in plaintext (backwards compatible).
+
+function getMasterKey(): Buffer | null {
+  const key = process.env.MANIAC_MASTER_KEY;
+  if (!key) return null;
+  // Derive a 32-byte key from the master key using SHA-256
+  return crypto.createHash('sha256').update(key, 'utf8').digest();
+}
+
+const ENC_PREFIX = '$enc$';
+
+function encryptField(plaintext: string): string {
+  if (!plaintext) return plaintext;
+  const mk = getMasterKey();
+  if (!mk) return plaintext; // No master key — store plaintext
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', mk, iv);
+  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag().toString('hex');
+  return `${ENC_PREFIX}${iv.toString('hex')}.${authTag}.${encrypted}`;
+}
+
+function decryptField(field: string): string {
+  if (!field.startsWith(ENC_PREFIX)) return field; // Not encrypted
+  const mk = getMasterKey();
+  if (!mk) {
+    console.warn('[config] Campo criptografado encontrado, mas MANIAC_MASTER_KEY não está definida');
+    return ''; // Never treat ciphertext as a usable API key
+  }
+  const payload = field.slice(ENC_PREFIX.length);
+  const parts = payload.split('.');
+  if (parts.length !== 3) {
+    console.warn('[config] Formato de campo criptografado inválido');
+    return field;
+  }
+  const [ivHex, authTagHex, encrypted] = parts;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', mk, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (e) {
+    console.warn('[config] Falha ao descriptografar campo (chave inválida?):', e);
+    return ''; // Return empty so we don't use a bad key silently
+  }
+}
+
+function encryptConfigKeys(cfg: ManiacConfig): ManiacConfig {
+  if (!getMasterKey()) return cfg;
+  return {
+    ...cfg,
+    apiKey: encryptField(cfg.apiKey),
+    autoSlots: cfg.autoSlots?.map(s => ({
+      ...s,
+      apiKey: encryptField(s.apiKey),
+    })),
+  };
+}
+
+function decryptConfigKeys(cfg: ManiacConfig): ManiacConfig {
+  return {
+    ...cfg,
+    apiKey: decryptField(cfg.apiKey),
+    autoSlots: cfg.autoSlots?.map(s => ({
+      ...s,
+      apiKey: decryptField(s.apiKey),
+    })),
+  };
+}
+
 /**
- * Default auto-router slots.
- * Grok Build (via OpenCode Zen) first — best at tool-calling / not dumping
- * scripts as markdown. Then other Zen free models, NVIDIA NIM last.
- * @see https://github.com/xai-org/grok-build
+ * Default auto-router slots — OpenCode Zen free models only.
+ * Avoid openrouter/free / random free gateways: they can route to content-safety
+ * classifiers that dump "User Safety: unsafe" instead of answering.
+ * @see https://opencode.ai/docs/zen/
  */
 export const AUTO_SLOTS: AutoRouterSlot[] = [
   {
     provider: 'opencode',
-    model: 'grok-build-0.1',
+    model: 'big-pickle',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
     priority: 100,
   },
   {
     provider: 'opencode',
-    model: 'grok-4.5',
+    model: 'north-mini-code-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
     priority: 95,
   },
   {
     provider: 'opencode',
-    model: 'big-pickle',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 80,
-  },
-  {
-    provider: 'opencode',
     model: 'deepseek-v4-flash-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 75,
-  },
-  {
-    provider: 'opencode',
-    model: 'nemotron-3-ultra-free',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 70,
+    priority: 90,
   },
   {
     provider: 'opencode',
     model: 'mimo-v2.5-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 65,
+    priority: 85,
   },
   {
     provider: 'opencode',
-    model: 'north-mini-code-free',
+    model: 'laguna-s-2.1-free',
     apiKey: process.env.OPENCODE_API_KEY || '',
     baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 60,
+    priority: 80,
   },
   {
-    provider: 'nvidia',
-    model: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-    apiKey: process.env.NVIDIA_API_KEY || '',
-    baseUrl: 'https://integrate.api.nvidia.com/v1',
-    priority: 40,
+    provider: 'opencode',
+    model: 'nemotron-3-ultra-free',
+    apiKey: process.env.OPENCODE_API_KEY || '',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    priority: 75,
   },
 ];
 
 export function loadManiacConfig(): ManiacConfig | null {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
-      return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      // Strip UTF-8 BOM — Windows editors / PowerShell `Set-Content -Encoding utf8`
+      // often prepend U+FEFF, which JSON.parse rejects.
+      const text = fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^\uFEFF/, '');
+      const raw = JSON.parse(text);
+      return decryptConfigKeys(raw);
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[config] loadManiacConfig falhou:', e);
+  }
   return null;
 }
 
 export function saveManiacConfig(cfg: ManiacConfig): void {
   const dir = path.dirname(CONFIG_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  const encrypted = encryptConfigKeys(cfg);
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(encrypted, null, 2));
 }
 
 /** Maps a config provider id / auto slot provider to its required env var. */
@@ -281,6 +371,8 @@ const PROVIDER_ENV_KEY: Record<string, string> = {
   together: 'TOGETHER_API_KEY',
   nvidia: 'NVIDIA_API_KEY',
   opencode: 'OPENCODE_API_KEY',
+  kilo: 'KILO_GATEWAY_API_KEY',
+  cohere: 'COHERE_API_KEY',
 };
 
 /**

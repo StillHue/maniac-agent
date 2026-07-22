@@ -2,6 +2,7 @@ import * as path from 'path';
 import type { ChatMessage, StreamEvent } from '@maniac/types';
 import { chatWithProvider } from './opencode';
 import { executeToolCall, parseToolCalls, stripToolCalls } from './tools';
+import { resolveToolCallsFromCompletion } from './openai-tools';
 import { isReadOnlyShell } from './permissions';
 
 export const SENTINEL_MODEL = 'north-mini-code-free';
@@ -161,19 +162,21 @@ export async function runSentinelReview(opts: SentinelRunOptions): Promise<strin
     }
 
     let reply = '';
+    let toolCalls: { type: string; command: string }[] = [];
     try {
-      reply = await chatWithProvider(
+      const completion = await chatWithProvider(
         messages,
         { provider: SENTINEL_PROVIDER, model: SENTINEL_MODEL, temperature: 0.2, maxTokens: 4096 },
         onEvent,
       );
+      reply = completion.content;
+      toolCalls = resolveToolCallsFromCompletion(completion, parseToolCalls);
     } catch (e: any) {
       onEvent({ type: 'error', message: e.message || String(e) });
       onEvent({ type: 'done' });
       return finalReply || `Erro: ${e.message || e}`;
     }
 
-    const toolCalls = parseToolCalls(reply); // no fence→exec recovery
     if (toolCalls.length === 0) {
       finalReply = stripToolCalls(reply) || reply.trim();
       if (!finalReply) {

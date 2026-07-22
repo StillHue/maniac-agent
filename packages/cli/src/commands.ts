@@ -41,6 +41,7 @@ export const HELP_TEXT = [
   '',
   '  Shift+Tab               cycle engine mode (chat → ask → plan)',
   '  Ctrl+T                  cycle permission mode',
+  '  Ctrl+E                  expand/collapse last thought',
   '  Alt+V                   attach clipboard image (or /paste)',
   '  ↑/↓                     command history',
 ].join('\n');

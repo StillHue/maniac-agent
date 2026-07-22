@@ -1,8 +1,12 @@
 import * as http from 'http';
+import * as crypto from 'crypto';
 const ESC = '\x1b';
 import * as path from 'path';
 
-try { require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') }); } catch {} // skip if dotenv not installed
+try { require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') }); } catch (e) {
+  // dotenv is optional — it's fine if not installed
+  console.debug('[server] dotenv not available:', e);
+}
 
 import { runEngine } from './engine';
 import { EngineMode } from '@maniac/types';
@@ -11,8 +15,85 @@ import { executeToolCall } from './tools';
 import { TOOL_CATALOG } from './tool-catalog';
 import { getImmortalityStatus, checkResume, immortalitySummary, cleanImmortalityState, loadCheckpoint, MANIAC_DIR } from './immortality';
 
+// ─── Rate Limiter ───────────────────────────────────────────────────────────
+// Simple in-memory sliding window rate limiter to prevent abuse of HTTP routes.
+
+interface RateLimitEntry {
+  timestamps: number[];
+}
+
+const rateLimitMap = new Map<string, RateLimitEntry>();
+const RATE_LIMIT_WINDOW_MS = 60_000;  // 1 minute
+const RATE_LIMIT_MAX_REQS = 60;        // max requests per window
+
+function rateLimit(ip: string): { allowed: boolean; remaining: number; resetMs: number } {
+  const now = Date.now();
+  let entry = rateLimitMap.get(ip);
+  if (!entry) {
+    entry = { timestamps: [] };
+    rateLimitMap.set(ip, entry);
+  }
+  // Remove timestamps outside the window
+  entry.timestamps = entry.timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  if (entry.timestamps.length >= RATE_LIMIT_MAX_REQS) {
+    const oldest = entry.timestamps[0];
+    return { allowed: false, remaining: 0, resetMs: oldest + RATE_LIMIT_WINDOW_MS - now };
+  }
+  entry.timestamps.push(now);
+  return { allowed: true, remaining: RATE_LIMIT_MAX_REQS - entry.timestamps.length, resetMs: 0 };
+}
+
+// Periodic cleanup of stale entries (every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap.entries()) {
+    entry.timestamps = entry.timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (entry.timestamps.length === 0) rateLimitMap.delete(ip);
+  }
+}, 300_000).unref();
+
 const PORT = parseInt(process.env.MANIAC_PORT || process.env.ARES_PORT || '3130', 10);
+/** Default loopback only — set MANIAC_BIND=0.0.0.0 to expose on all interfaces. */
+const BIND_HOST = process.env.MANIAC_BIND || '127.0.0.1';
 const PID_FILE = path.join(__dirname, '..', '..', '..', '.maniac.pid');
+const API_TOKEN = process.env.MANIAC_API_TOKEN || '';
+/** Comma-separated allowed CORS origins. Default: localhost / 127.0.0.1 only. */
+const CORS_ALLOW = (process.env.MANIAC_CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const DANGEROUS_PATHS = new Set(['/api/engine/execute', '/api/engine/spawn']);
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+function requireAuth(req: http.IncomingMessage): boolean {
+  if (!API_TOKEN) return false;
+  const provided = (req.headers['authorization'] as string) || '';
+  const bearer = provided.startsWith('Bearer ') ? provided.slice(7) : provided;
+  return timingSafeEqualStr(bearer, API_TOKEN);
+}
+
+function resolveCorsOrigin(origin: string | undefined): string | null {
+  if (!origin) return null;
+  if (CORS_ALLOW.length > 0) {
+    return CORS_ALLOW.includes(origin) ? origin : null;
+  }
+  try {
+    const u = new URL(origin);
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]') {
+      return origin;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
 
 interface ServerState {
   running: boolean;
@@ -36,14 +117,18 @@ function writePid(): void {
   try {
     const fs = require('fs');
     fs.writeFileSync(PID_FILE, String(process.pid), 'utf8');
-  } catch {}
+  } catch (e) {
+    console.debug('[server] Erro ao escrever PID:', e);
+  }
 }
 
 function removePid(): void {
   try {
     const fs = require('fs');
     if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
-  } catch {}
+  } catch (e) {
+    console.debug('[server] Erro ao remover PID:', e);
+  }
 }
 
 function parseBody(req: http.IncomingMessage): Promise<any> {
@@ -52,14 +137,16 @@ function parseBody(req: http.IncomingMessage): Promise<any> {
     req.on('data', (chunk) => { data += chunk; });
     req.on('end', () => {
       try { resolve(JSON.parse(data)); }
-      catch { reject(new Error('Invalid JSON')); }
+      catch (e) { reject(new Error('Invalid JSON: ' + (e instanceof Error ? e.message : String(e)))); }
     });
     req.on('error', reject);
   });
 }
 
-function sendJson(res: http.ServerResponse, status: number, data: any): void {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+function sendJson(res: http.ServerResponse, status: number, data: any, origin?: string): void {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (origin) headers['Access-Control-Allow-Origin'] = origin;
+  res.writeHead(status, headers);
   res.end(JSON.stringify(data));
 }
 
@@ -100,7 +187,6 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse): 
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
     });
 
     const sendEvent = (event: string, data: string) => {
@@ -182,7 +268,9 @@ async function handleProactive(req: http.IncomingMessage, res: http.ServerRespon
     try {
       const body = await parseBody(req);
       if (body.ids) markDelivered(body.ids);
-    } catch {}
+    } catch (e) {
+      console.debug('[server] Erro ao marcar entregas:', e);
+    }
   }
   sendJson(res, 200, { messages: undelivered });
 }
@@ -336,16 +424,51 @@ const router: Record<string, (req: http.IncomingMessage, res: http.ServerRespons
 };
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Headers', '*');
+  const origin = resolveCorsOrigin(req.headers['origin']);
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204);
+    res.writeHead(origin ? 204 : 403);
     res.end();
     return;
   }
 
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const isHealth = url.pathname === '/api/engine/health';
+  const isDangerous = DANGEROUS_PATHS.has(url.pathname);
+
+  // Dangerous endpoints always require a configured bearer token.
+  if (isDangerous) {
+    if (!API_TOKEN) {
+      sendJson(res, 503, {
+        error: 'MANIAC_API_TOKEN is required for /execute and /spawn',
+      });
+      return;
+    }
+    if (!requireAuth(req)) {
+      sendJson(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+  } else if (API_TOKEN && !isHealth && !requireAuth(req)) {
+    // When a token is set, all non-health routes require it.
+    sendJson(res, 401, { error: 'Unauthorized' });
+    return;
+  }
+
+  // Rate limiting by IP
+  const ip = req.socket.remoteAddress || 'unknown';
+  const rl = rateLimit(ip);
+  if (!rl.allowed) {
+    res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(Math.ceil(rl.resetMs / 1000)) });
+    res.end(JSON.stringify({ error: 'rate limit exceeded', retryAfterMs: rl.resetMs }));
+    return;
+  }
+
   const handler = router[url.pathname];
 
   if (!handler) {
@@ -353,12 +476,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/engine/health') {
+  if (req.method === 'GET' && isHealth) {
     await handleHealth(req, res);
     return;
   }
 
-  if (req.method !== 'POST') {
+  const allowGet =
+    url.pathname === '/api/engine/immortality' ||
+    url.pathname === '/api/engine/tools' ||
+    url.pathname === '/api/engine/proactive';
+  if (req.method === 'GET' && !allowGet) {
+    sendJson(res, 405, { error: 'method not allowed' });
+    return;
+  }
+  if (req.method !== 'GET' && req.method !== 'POST') {
     sendJson(res, 405, { error: 'method not allowed' });
     return;
   }
@@ -373,9 +504,9 @@ export function startServer(port?: number): Promise<http.Server> {
     state.startedAt = Date.now();
     state.pid = process.pid;
 
-    server.listen(p, () => {
+    server.listen(p, BIND_HOST, () => {
       writePid();
-      console.log(`[maniac-server] PID ${process.pid} ouvindo em http://localhost:${p}`);
+      console.log(`[maniac-server] PID ${process.pid} ouvindo em http://${BIND_HOST}:${p}`);
       // Safe auto-resume on startup (read-only pending tools only)
       if (process.env.MANIAC_NO_AUTO_RESUME !== '1') {
         try {
@@ -385,7 +516,9 @@ export function startServer(port?: number): Promise<http.Server> {
               console.log(`[maniac-server] auto-resume: ${outcome.message}`);
             }
           });
-        } catch {}
+        } catch (e) {
+          console.debug('[server] auto-resume falhou:', e);
+        }
       }
       resolve(server);
     });

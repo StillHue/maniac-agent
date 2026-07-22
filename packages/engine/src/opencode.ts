@@ -1,8 +1,17 @@
 import { ChatMessage, StreamEvent } from '@maniac/types';
 import * as path from 'path';
 import { loadManiacConfig, PROVIDER_DEFS, AUTO_SLOTS, AutoRouterSlot } from './config';
+import {
+  buildOpenAITools,
+  finalizeNativeToolCalls,
+  type CompletionResult,
+  type OpenAIFunctionTool,
+} from './openai-tools';
 
-try { require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') }); } catch {}
+export type { CompletionResult, NativeToolCall } from './openai-tools';
+
+try { require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') }); }
+catch { /* dotenv optional */ }
 
 // ─── Legacy env-var defaults (fallback when config.json absent) ────────────
 
@@ -54,29 +63,88 @@ export function getProviderHistory(): typeof providerHistory {
   return [...providerHistory];
 }
 
+function emptyCompletion(content = ''): CompletionResult {
+  return { content, toolCalls: [] };
+}
+
+function mergeToolCallDelta(
+  pending: Map<number, { id: string; name: string; arguments: string }>,
+  parts: any[],
+): void {
+  for (const part of parts) {
+    const idx = typeof part.index === 'number' ? part.index : 0;
+    const cur = pending.get(idx) || { id: '', name: '', arguments: '' };
+    if (part.id) cur.id = String(part.id);
+    if (part.function?.name) cur.name += String(part.function.name);
+    if (typeof part.function?.arguments === 'string') cur.arguments += part.function.arguments;
+    pending.set(idx, cur);
+  }
+}
+
+function messageToolCallsToNative(msg: any): CompletionResult['toolCalls'] {
+  const raw = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
+  const pending = new Map<number, { id: string; name: string; arguments: string }>();
+  raw.forEach((tc: any, i: number) => {
+    pending.set(i, {
+      id: String(tc.id || `call_${i}`),
+      name: String(tc.function?.name || ''),
+      arguments: typeof tc.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments || {}),
+    });
+  });
+  return finalizeNativeToolCalls(pending);
+}
+
 // ─── OpenAI-compatible streaming call ────────────────────────────────────────
 
 async function callOpenAICompat(
   messages: ChatMessage[],
   onEvent: ((e: StreamEvent) => void) | undefined,
-  opts: { apiKey: string; baseUrl: string; model: string; temperature: number; maxTokens: number },
-): Promise<string> {
+  opts: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    temperature: number;
+    maxTokens: number;
+    tools?: OpenAIFunctionTool[];
+    allowTools?: boolean;
+  },
+): Promise<CompletionResult> {
   const { apiKey, baseUrl, model, temperature, maxTokens } = opts;
+  const useTools = opts.allowTools !== false && (opts.tools?.length ?? 0) > 0;
+  const tools = useTools ? opts.tools : undefined;
   const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
   const isStream = !!onEvent;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: isStream,
+  };
+  if (tools?.length) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+
   const res = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, stream: isStream }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(120000),
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status}${err ? `: ${err.slice(0, 200)}` : ''}`);
+    const status = res.status;
+    // Some free/gateway models reject tools — retry once without them.
+    if (tools?.length && status >= 400 && status < 500) {
+      console.debug(`[opencode] tools rejected (${status}); retrying without tools`);
+      return callOpenAICompat(messages, onEvent, { ...opts, allowTools: false, tools: undefined });
+    }
+    throw new Error(`HTTP ${status}${err ? `: ${err.slice(0, 200)}` : ''}`);
   }
 
   if (!isStream || !res.body) {
@@ -85,9 +153,10 @@ async function callOpenAICompat(
     const content = typeof msg.content === 'string' ? msg.content.trim() : '';
     const reasoning =
       typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : '';
-    // Grok may put [TOOL:…] only in reasoning_content. Promote reasoning only
-    // when it has an explicit tool protocol — never raw CoT / example fences.
-    return content || (hasExplicitToolProtocol(reasoning) ? reasoning : '');
+    const toolCalls = messageToolCallsToNative(msg);
+    const text =
+      content || (toolCalls.length === 0 && hasExplicitToolProtocol(reasoning) ? reasoning : '');
+    return { content: text, toolCalls };
   }
 
   const reader = res.body.getReader();
@@ -95,6 +164,7 @@ async function callOpenAICompat(
   let buffer = '';
   let fullText = '';
   let reasoningText = '';
+  const pendingTools = new Map<number, { id: string; name: string; arguments: string }>();
   const { stripThinking } = require('./tools') as typeof import('./tools');
 
   while (true) {
@@ -119,10 +189,12 @@ async function callOpenAICompat(
           reasoningText += reason;
           if (onEvent) onEvent({ type: 'reasoning', content: reason });
         }
+        if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
+          mergeToolCallDelta(pendingTools, delta.tool_calls);
+        }
         const token = typeof delta.content === 'string' ? delta.content : '';
         if (token) {
           fullText += token;
-          // Emit only the user-visible delta — CoT stays off the transcript
           const visible = stripThinking(fullText);
           const prevVisible = stripThinking(fullText.slice(0, fullText.length - token.length));
           const visibleDelta = visible.startsWith(prevVisible)
@@ -130,15 +202,18 @@ async function callOpenAICompat(
             : visible;
           if (visibleDelta) onEvent!({ type: 'token', content: visibleDelta });
         }
-      } catch {}
+      } catch (e) {
+        console.debug('[opencode] Erro ao parsear streaming chunk:', e);
+      }
     }
   }
 
-  // Prefer visible content. Promote reasoning only when it carries an explicit
-  // tool protocol — never dump raw CoT (with example fences) into parseToolCalls.
+  const toolCalls = finalizeNativeToolCalls(pendingTools);
   const content = fullText.trim();
   const reasoning = reasoningText.trim();
-  return content || (hasExplicitToolProtocol(reasoning) ? reasoning : '');
+  const text =
+    content || (toolCalls.length === 0 && hasExplicitToolProtocol(reasoning) ? reasoning : '');
+  return { content: text, toolCalls };
 }
 
 // ─── Gemini call ─────────────────────────────────────────────────────────────
@@ -147,7 +222,7 @@ async function callGemini(
   messages: ChatMessage[],
   onEvent: ((e: StreamEvent) => void) | undefined,
   opts: { apiKey: string; model: string; temperature: number; maxTokens: number },
-): Promise<string> {
+): Promise<CompletionResult> {
   const { apiKey, model, temperature, maxTokens } = opts;
   const systemMsg = messages.find(m => m.role === 'system');
   const contents = messages
@@ -166,7 +241,7 @@ async function callGemini(
   const data = await res.json();
   const content = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
   if (onEvent) onEvent({ type: 'token', content });
-  return content;
+  return emptyCompletion(content);
 }
 
 // ─── Anthropic call ──────────────────────────────────────────────────────────
@@ -175,7 +250,7 @@ async function callAnthropic(
   messages: ChatMessage[],
   onEvent: ((e: StreamEvent) => void) | undefined,
   opts: { apiKey: string; model: string; temperature: number; maxTokens: number },
-): Promise<string> {
+): Promise<CompletionResult> {
   const { apiKey, model, temperature, maxTokens } = opts;
   const systemMsg = messages.find(m => m.role === 'system')?.content;
   const filtered = messages.filter(m => m.role !== 'system');
@@ -193,12 +268,12 @@ async function callAnthropic(
   const data = await res.json();
   const content = data.content?.[0]?.text?.trim() || '';
   if (onEvent) onEvent({ type: 'token', content });
-  return content;
+  return emptyCompletion(content);
 }
 
 // ─── Hermes (legacy local service) ───────────────────────────────────────────
 
-async function callHermes(messages: ChatMessage[], onEvent?: (e: StreamEvent) => void): Promise<string> {
+async function callHermes(messages: ChatMessage[], onEvent?: (e: StreamEvent) => void): Promise<CompletionResult> {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   if (!lastUser) throw new Error('No user message found');
   const res = await fetch(HERMES_API_URL, {
@@ -210,7 +285,7 @@ async function callHermes(messages: ChatMessage[], onEvent?: (e: StreamEvent) =>
   if (!res.ok) throw new Error(`Hermes HTTP ${res.status}`);
   const data = await res.json();
   if (onEvent) onEvent({ type: 'token', content: data.response });
-  return data.response || '';
+  return emptyCompletion(data.response || '');
 }
 
 // ─── Auto-router ─────────────────────────────────────────────────────────────
@@ -226,9 +301,16 @@ function resolveSlots(overrides?: AutoRouterSlot[]): AutoRouterSlot[] {
   return slots.map(s => ({
     ...s,
     apiKey: s.apiKey
-      || (s.provider === 'nvidia'   ? process.env.NVIDIA_API_KEY   : '')
-      || (s.provider === 'opencode' ? process.env.OPENCODE_API_KEY : '')
-      || (s.provider === 'xai'      ? process.env.XAI_API_KEY      : '')
+      || (s.provider === 'nvidia'     ? process.env.NVIDIA_API_KEY       : '')
+      || (s.provider === 'opencode'   ? process.env.OPENCODE_API_KEY     : '')
+      || (s.provider === 'xai'        ? process.env.XAI_API_KEY          : '')
+      || (s.provider === 'openrouter' ? process.env.OPENROUTER_API_KEY   : '')
+      || (s.provider === 'kilo'       ? process.env.KILO_GATEWAY_API_KEY : '')
+      || (s.provider === 'groq'       ? process.env.GROQ_API_KEY         : '')
+      || (s.provider === 'gemini'     ? process.env.GEMINI_API_KEY       : '')
+      || (s.provider === 'mistral'    ? process.env.MISTRAL_API_KEY      : '')
+      || (s.provider === 'together'   ? process.env.TOGETHER_API_KEY     : '')
+      || (s.provider === 'cohere'     ? process.env.COHERE_API_KEY       : '')
       || '',
   }));
 }
@@ -239,7 +321,8 @@ async function callAutoRouter(
   slotOverrides?: AutoRouterSlot[],
   temperature = 0.3,
   maxTokens = 4096,
-): Promise<string> {
+  tools?: OpenAIFunctionTool[],
+): Promise<CompletionResult> {
   const slots = resolveSlots(slotOverrides);
   const errors: string[] = [];
 
@@ -259,7 +342,7 @@ async function callAutoRouter(
         return await callAnthropic(messages, onEvent, { apiKey: slot.apiKey, model: slot.model, temperature, maxTokens });
       }
       return await callOpenAICompat(messages, onEvent, {
-        apiKey: slot.apiKey, baseUrl, model: slot.model, temperature, maxTokens,
+        apiKey: slot.apiKey, baseUrl, model: slot.model, temperature, maxTokens, tools,
       });
     } catch (e: any) {
       errors.push(`${slot.provider}/${slot.model}: ${e.message}`);
@@ -276,7 +359,8 @@ async function routeCall(
   onEvent: ((e: StreamEvent) => void) | undefined,
   overrideProvider?: string,
   overrideModel?: string,
-): Promise<string> {
+  tools?: OpenAIFunctionTool[],
+): Promise<CompletionResult> {
   const { hydrateProviderCall } = require('./provider-switch') as typeof import('./provider-switch');
   const cfg = loadManiacConfig();
 
@@ -288,9 +372,10 @@ async function routeCall(
   const temperature = hydrated.temperature;
   const maxTokens = hydrated.maxTokens;
   const def = PROVIDER_DEFS.find(d => d.id === provider);
+  const openaiTools = tools ?? buildOpenAITools();
 
   if (provider === 'auto') {
-    return callAutoRouter(messages, onEvent, hydrated.autoSlots, temperature, maxTokens);
+    return callAutoRouter(messages, onEvent, hydrated.autoSlots, temperature, maxTokens, openaiTools);
   }
   if (provider === 'gemini' || def?.format === 'gemini') {
     if (!apiKey) throw new Error('GEMINI_API_KEY not set');
@@ -307,7 +392,7 @@ async function routeCall(
     return callOpenAICompat(messages, onEvent, {
       apiKey: apiKey || OPENCODE_API_KEY,
       baseUrl: baseUrl || OPENCODE_API_URL.replace('/chat/completions', ''),
-      model, temperature, maxTokens,
+      model, temperature, maxTokens, tools: openaiTools,
     });
   }
   if (provider === 'groq') {
@@ -315,7 +400,7 @@ async function routeCall(
     return callOpenAICompat(messages, onEvent, {
       apiKey: apiKey || GROQ_API_KEY,
       baseUrl: baseUrl || 'https://api.groq.com/openai/v1',
-      model, temperature, maxTokens,
+      model, temperature, maxTokens, tools: openaiTools,
     });
   }
   if (provider === 'nvidia') {
@@ -323,7 +408,7 @@ async function routeCall(
     return callOpenAICompat(messages, onEvent, {
       apiKey: apiKey || NVIDIA_API_KEY,
       baseUrl: baseUrl || NVIDIA_API_URL,
-      model, temperature, maxTokens,
+      model, temperature, maxTokens, tools: openaiTools,
     });
   }
 
@@ -331,7 +416,9 @@ async function routeCall(
   if (def?.requiresKey && !apiKey) {
     throw new Error(`API key not set for provider ${provider}`);
   }
-  return callOpenAICompat(messages, onEvent, { apiKey, baseUrl: resolvedBase, model, temperature, maxTokens });
+  return callOpenAICompat(messages, onEvent, {
+    apiKey, baseUrl: resolvedBase, model, temperature, maxTokens, tools: openaiTools,
+  });
 }
 
 // ─── Provider inference from message text ────────────────────────────────────
@@ -351,10 +438,14 @@ function inferProviderFromMessage(messages: ChatMessage[]): { provider: string; 
 export async function callOpenCode(
   messages: ChatMessage[],
   onEvent?: (event: StreamEvent) => void,
-): Promise<string> {
+  opts?: { tools?: OpenAIFunctionTool[]; allowedToolNames?: string[] },
+): Promise<CompletionResult> {
   const detected = inferProviderFromMessage(messages);
+  const tools =
+    opts?.tools ??
+    (opts?.allowedToolNames ? buildOpenAITools(opts.allowedToolNames) : buildOpenAITools());
   try {
-    const result = await routeCall(messages, onEvent, detected?.provider, detected?.model);
+    const result = await routeCall(messages, onEvent, detected?.provider, detected?.model, tools);
     providerHistory.push({
       task: messages[messages.length - 1]?.content?.slice(0, 100) || '',
       provider: detected?.provider || activeProvider.provider,
@@ -375,6 +466,6 @@ export async function chatWithProvider(
   messages: ChatMessage[],
   config: Partial<ProviderConfig>,
   onEvent?: (event: StreamEvent) => void,
-): Promise<string> {
+): Promise<CompletionResult> {
   return routeCall(messages, onEvent, config.provider, config.model);
 }

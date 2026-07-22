@@ -1,100 +1,74 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { ToolLine } from './ToolLine.js';
-import { ACCENT } from '../theme.js';
+import { ToolSection } from './ToolLine.js';
+import { SubagentSection } from './SubagentBlock.js';
+import { LiveThought } from './ThoughtBlock.js';
 import type { SubagentStatus, ToolCallView } from '../ui-types.js';
 
-function SubagentLine({
-  sub,
-  spinnerFrame,
-}: {
-  sub: SubagentStatus;
-  spinnerFrame?: string;
-}) {
-  const icon = sub.done ? (sub.success ? '✓' : '✗') : spinnerFrame || '⠋';
-  const snippet = sub.tokenSnippet
-    ? sub.tokenSnippet.replace(/\s+/g, ' ').trim().slice(-55)
-    : sub.lastTool
-      ? sub.lastTool
-      : '...';
-  const goal = sub.goal.slice(0, 35) + (sub.goal.length > 35 ? '…' : '');
-  return (
-    <Box>
-      <Text>
-        {'    '}
-        <Text color={sub.done ? undefined : ACCENT} dimColor={sub.done && !!sub.success}>
-          {icon}
-        </Text>
-        <Text dimColor>
-          {'  '}agent  {goal}  {snippet}
-        </Text>
-      </Text>
-    </Box>
-  );
-}
-
+/**
+ * Live activity region while a turn is running.
+ * Sections (top → bottom): thought stream → tools → agents.
+ */
 export function LiveArea({
   tools,
   subagents,
   dispatchCount,
-  maxLines,
+  maxLines: _maxLines,
   spinnerFrame,
+  thinking,
 }: {
   tools: ToolCallView[];
   subagents: SubagentStatus[];
   dispatchCount: number;
-  /** Hard cap so this region never forces terminal scroll under the chat. */
   maxLines: number;
   spinnerFrame?: string;
+  thinking?: string;
 }) {
-  if (tools.length === 0 && subagents.length === 0 && dispatchCount <= 0) return null;
+  const hasTools = tools.length > 0;
+  const hasAgents = subagents.length > 0 || dispatchCount > 0;
+  const hasThought = !!(thinking && thinking.trim());
 
-  const headerLines = dispatchCount > 0 ? 1 : 0;
-  const budget = Math.max(1, maxLines - headerLines);
-  const all: Array<{ kind: 'tool'; tc: ToolCallView } | { kind: 'sub'; sub: SubagentStatus }> = [
-    ...tools.map((tc) => ({ kind: 'tool' as const, tc })),
-    ...subagents.map((sub) => ({ kind: 'sub' as const, sub })),
-  ];
-  const clipped = all.length > budget;
-  const visible = all.slice(-(clipped ? budget - 1 : budget));
-  const active = subagents.filter((s) => !s.done).length;
-  const done = subagents.filter((s) => s.done).length;
-  const total = Math.max(dispatchCount, subagents.length);
-  const showDispatch = total > 0;
+  if (!hasTools && !hasAgents && !hasThought) return null;
+
+  // Cap visible tools/agents so the prompt stays on screen
+  const toolBudget = 8;
+  const agentBudget = 6;
+  const visibleTools = tools.length > toolBudget ? tools.slice(-toolBudget) : tools;
+  const visibleAgents =
+    subagents.length > agentBudget ? subagents.slice(-agentBudget) : subagents;
+  const hiddenTools = tools.length - visibleTools.length;
+  const hiddenAgents = subagents.length - visibleAgents.length;
 
   return (
-    <Box flexDirection="column" paddingLeft={2} paddingRight={2} flexShrink={0}>
-      {showDispatch && (
-        <Box>
-          <Text>
-            <Text color={ACCENT}>{active > 0 ? `${spinnerFrame || '⠋'} ` : '◆ '}</Text>
-            <Text color={ACCENT}>
-              {active > 0
-                ? `Dispatching ${total} subagent${total === 1 ? '' : 's'}`
-                : `Dispatched ${total} subagent${total === 1 ? '' : 's'}`}
-            </Text>
-            {subagents.length > 0 && (
-              <Text dimColor>
-                {`  ·  ${done}/${total} done`}
-              </Text>
-            )}
-          </Text>
+    <Box flexDirection="column" paddingLeft={0} paddingRight={2} flexShrink={0} marginBottom={1}>
+      {hasThought ? <LiveThought text={thinking!} spinnerFrame={spinnerFrame} /> : null}
+
+      {hasTools ? (
+        <Box flexDirection="column" paddingLeft={2}>
+          {hiddenTools > 0 ? (
+            <Box>
+              <Text dimColor>{`  ·  ${hiddenTools} earlier tools`}</Text>
+            </Box>
+          ) : null}
+          <ToolSection tools={visibleTools} spinnerFrame={spinnerFrame} live />
         </Box>
-      )}
-      {clipped && (
-        <Box>
-          <Text dimColor>
-            {'  '}… {all.length - visible.length} earlier steps
-          </Text>
+      ) : null}
+
+      {hasAgents ? (
+        <Box flexDirection="column" paddingLeft={2}>
+          {hiddenAgents > 0 ? (
+            <Box>
+              <Text dimColor>{`  ·  ${hiddenAgents} earlier agents`}</Text>
+            </Box>
+          ) : null}
+          <SubagentSection
+            subagents={visibleAgents}
+            dispatchCount={dispatchCount}
+            spinnerFrame={spinnerFrame}
+            live
+          />
         </Box>
-      )}
-      {visible.map((item, i) =>
-        item.kind === 'tool' ? (
-          <ToolLine key={i} tc={item.tc} spinnerFrame={spinnerFrame} />
-        ) : (
-          <SubagentLine key={i} sub={item.sub} spinnerFrame={spinnerFrame} />
-        ),
-      )}
+      ) : null}
     </Box>
   );
 }

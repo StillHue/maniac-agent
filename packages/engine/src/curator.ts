@@ -19,7 +19,9 @@ function loadState(): CuratorState {
     if (fs.existsSync(CURATOR_STATE_FILE)) {
       return JSON.parse(fs.readFileSync(CURATOR_STATE_FILE, 'utf8'));
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[curator] loadState falhou:', e);
+  }
   return { lastRun: 0, intervalHours: 24 };
 }
 
@@ -28,8 +30,10 @@ function saveState(state: CuratorState): void {
     const dir = path.dirname(CURATOR_STATE_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(CURATOR_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
-  } catch {}
-}
+  } catch (e) {
+    console.debug('[curator] saveState falhou:', e);
+    }
+  }
 
 function takeSnapshot(): string | null {
   try {
@@ -54,7 +58,8 @@ function takeSnapshot(): string | null {
     }
 
     return snapshotDir;
-  } catch {
+  } catch (e) {
+    console.warn('[curator] takeSnapshot falhou:', e);
     return null;
   }
 }

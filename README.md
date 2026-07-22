@@ -1,120 +1,49 @@
-<div align="center">
-<pre>
-███╗   ███╗ █████╗ ███╗   ██╗██╗ █████╗  ██████╗
-████╗ ████║██╔══██╗████╗  ██║██║██╔══██╗██╔════╝
-██╔████╔██║███████║██╔██╗ ██║██║███████║██║
-██║╚██╔╝██║██╔══██║██║╚██╗██║██║██╔══██║██║
-██║ ╚═╝ ██║██║  ██║██║ ╚████║██║██║  ██║╚██████╗
-╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝ ╚═════╝
+# Maniac
 
-   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
+![GitHub Repo stars](https://img.shields.io/github/stars/StillHue/maniac-agent?style=social)
 
-     ▒▓▓▓▓▓▓▒░        ░▒▓▓▓▓▓▓▓▓▓▓▓▒░          ░▒▓▓▓▓▓▒
-   ▒▓▓▓▓▓▓▓▓▓▓▒░    ░▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒░     ░▒▓▓▓▓▓▓▓▓▒
-     ░▒▒▓▓▓▒▒░        ░░▒▒▓▓▓▓▓▄█▀▓▓▒▒░░         ░▒▓▓▓▒▒░
-    ╱      ╱     ╱        ╱   ▄█▀      ╱       ╱      ╱
-       ╱      ╱      ╱       ▀██▄   ╱      ╱       ╱
-    ╱     ╱      ╱      ╱      ▀█▄     ╱      ╱      ╱
-        ╱     ╱     ╱        ✦ ▄█  ✦     ╱       ╱
-               ╱           ▄█████████▄         ╱
-      ╱       ✧           ▐███ ███ ███▌   ✧        ╱
-          ╱               ▐███ ███ ███▌        ╱
-     ╱          ╱          ▀█████████▀             ╱
-  ··························█ █   █ █·······················
+**Maniac** is an open source autonomous AI agent that runs on your machine. You give it a goal, it figures out how to get there — running tools, writing code, browsing files, making SSRF-safe HTTP requests, and talking to you on Telegram. It learns, improves, and can modify its own source when authorized.
 
-         ✦ the 'what the hell, let's try it' agent ✦
-</pre>
-</div>
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/StillHue/maniac-agent/actions/workflows/ci.yml)
-[![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#status)
-
-Maniac is an open source autonomous AI agent that runs on your machine. You give it a goal, it figures out how to get there — running tools, writing code, browsing files, making SSRF-safe HTTP requests, and talking to you on Telegram. It remembers what it learns, drafts skill/self-improvement **proposals** over time (apply only with explicit approval), and can modify its own source when you authorize it.
-
-It is not a chatbot. It is not a coding assistant. It is the agent you spin up when you have an idea that sounds insane and you want to see if it actually works.
+> **Not** a chatbot. **Not** a coding assistant. The agent you spin up when you have an idea that sounds insane and you want to see if it actually works.
 
 > [!WARNING]
-> Maniac runs shell commands, writes files, and can modify and rebuild its own source code. Run it in an environment you trust — ideally a sandbox or VM — and review what it does before pointing it at anything important. See [SECURITY.md](SECURITY.md).
+> Maniac runs shell commands, writes files, and can modify and rebuild its own source code. Run it in a trusted environment — ideally a sandbox or VM — and review what it does before pointing it at anything important. See [SECURITY.md](SECURITY.md).
 
 ---
 
-## Contents
+## Quick Start
 
-- [Status](#status)
-- [Install](#install)
-- [What it does](#what-it-does)
-- [Interfaces](#interfaces)
-- [Quick start (manual)](#quick-start-manual)
-- [Providers](#providers)
-- [Environment variables](#environment-variables)
-- [Project structure](#project-structure)
-- [Build](#build)
-- [Contributing](#contributing)
-- [License](#license)
+**Installation:** `npm install -g maniac-agent` (or use one-line installer below)
 
----
-
-## Status
-
-Maniac is **experimental** (`v0.2.0`). Expect rough edges, breaking changes, and behavior that surprises you — that is part of the point. Feedback and contributions are very welcome.
-
----
-
-## Install
-
-### npm or bun (recommended)
-
-```sh
-npm install -g maniac-agent
-# or
-bun install -g maniac-agent
-```
-
-Then add at least one API key (see [Environment variables](#environment-variables)) — e.g. create `~/.maniac/maniac-agent/.env` or export `OPENCODE_API_KEY` / `GROQ_API_KEY` — and run:
+**Setup:** Add at least one API key (e.g., `GROQ_API_KEY`) and run:
 
 ```sh
 maniac
 ```
 
-Publishing: push a version tag (`v0.2.0`). GitHub Actions builds a bundled `maniac-agent` package and publishes it to the npm registry (bun installs from the same registry). Maintainers: `yarn release patch` (or `minor` / `major` / `0.2.0`), then `git push origin HEAD --tags`. Requires the `NPM_TOKEN` repository secret.
+**One-line installer (requires Node.js 18+, Git, Yarn):**
 
-### One-line installer (clones from GitHub)
-
-Requires **Node.js 18+**, **Git**, and **Yarn** (the installer sets up Yarn for you if missing).
-
-**Windows**
+Windows:
 ```powershell
 irm https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.ps1 | iex
 ```
 
-**macOS / Linux**
+macOS/Linux:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.sh | sh
 ```
 
-The installer clones Maniac into `~/.maniac/maniac-agent`, builds it, and adds a `maniac` command to your PATH. Then add at least one API key to `~/.maniac/maniac-agent/.env` (`GROQ_API_KEY` has a free tier) and run:
-
-```sh
-maniac
-```
-
-**Headless / scripting**
-
-```sh
-maniac -p "summarize this repo"           # NDJSON stream on stdout
-maniac -p "run tests" --yolo              # auto-approve tool calls
-maniac --continue                         # resume latest session (TUI)
-maniac --resume <session-id>
-```
-
-In the TUI: **Shift+Tab** cycles chat/ask/plan; **Ctrl+T** cycles permission modes; dangerous tools prompt for approval in `default` mode. See `/help`.
-
-> The one-line install gives you the **CLI**. The **web UI** and **Telegram** interfaces run from a manual clone — see [Quick start](#quick-start-manual).
+**Basic commands:**
+- `maniac -p "your goal"` - Run with a prompt
+- `maniac --continue` - Resume latest session
+- `maniac telegram` - Start Telegram bot
+- `maniac --help` - Show all options
 
 ---
 
-## What it does
+## What It Does
 
 - **Runs autonomously** — give it a goal, it loops: thinks → picks tools → executes → reflects → repeats until done
 - **Persistent memory** — remembers facts, preferences, and project context across sessions in `~/.maniac/`
@@ -139,7 +68,37 @@ In the TUI: **Shift+Tab** cycles chat/ask/plan; **Ctrl+T** cycles permission mod
 
 ---
 
-## Quick start (manual)
+## Installation
+
+### Global installation (recommended)
+
+```sh
+npm install -g maniac-agent
+# or
+bun install -g maniac-agent
+```
+
+### One-line installer (clones from GitHub)
+
+Requires **Node.js 18+**, **Git**, and **Yarn**.
+
+**Windows**
+```powershell
+irm https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.ps1 | iex
+```
+
+**macOS / Linux**
+```sh
+curl -fsSL https://raw.githubusercontent.com/StillHue/maniac-agent/main/scripts/install.sh | sh
+```
+
+The installer clones Maniac into `~/.maniac/maniac-agent`, builds it, and adds a `maniac` command to your PATH. Then add at least one API key to `~/.maniac/maniac-agent/.env` (`GROQ_API_KEY` has a free tier) and run:
+
+```sh
+maniac
+```
+
+### Manual clone (for web UI and Telegram)
 
 ```sh
 git clone https://github.com/StillHue/maniac-agent
@@ -149,14 +108,12 @@ yarn install
 yarn dev               # web UI at http://localhost:3000
 ```
 
-For the CLI:
+For the CLI from a clone:
 
 ```sh
 yarn build:cli
 maniac
 ```
-
----
 
 ## Providers
 
@@ -176,11 +133,9 @@ Maniac works with any of the providers below — add the key for **at least one*
 | OpenCode | `OPENCODE_API_KEY` | OpenCode Zen models (e.g. `big-pickle`). |
 | Ollama | — | Local models, no key required (`http://localhost:11434`). |
 | Custom | — | Any OpenAI-compatible endpoint. |
-| Auto | — | Built-in router: Grok Build (`grok-build-0.1` → `grok-4.5` via OpenCode Zen) primary, then Zen free models, NVIDIA NIM last fallback. |
+| Auto | — | Built-in router: tries available providers in priority order. |
 
----
-
-## Environment variables
+## Environment Variables
 
 Copy `.env.example` to `.env` and fill in what you need. All values are optional except **one** provider key.
 
@@ -210,9 +165,7 @@ Copy `.env.example` to `.env` and fill in what you need. All values are optional
 
 > The web UI runs on port **3000** (`yarn dev`); the optional router service runs on **3001** (`PORT`, `yarn dev:service`). They are independent.
 
----
-
-## Project structure
+## Project Structure
 
 ```
 apps/
@@ -231,24 +184,19 @@ docs/
   CODE_WIKI.md              Architecture & code walkthrough
 ```
 
----
-
-## Build
+## Build & Run
 
 ```sh
-yarn build:all        # types → prompts → engine → web
-yarn build:cli        # CLI
-yarn dev:service      # optional router service (port 3001)
-yarn test             # run the test suite (Vitest)
+npm install          # or bun install / yarn install
+yarn build:all       # types → prompts → engine → web
+yarn build:cli       # CLI
+yarn dev:service     # optional router service (port 3001)
+yarn test            # run the test suite (Vitest)
 ```
-
----
 
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and our [Code of Conduct](CODE_OF_CONDUCT.md) before opening an issue or pull request. For security reports, follow [SECURITY.md](SECURITY.md) — do not open a public issue.
-
----
 
 ## License
 

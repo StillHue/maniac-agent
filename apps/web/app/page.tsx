@@ -97,6 +97,10 @@ const s = {
   contentTypeTag: { fontSize: '0.65rem', color: D, fontStyle: 'italic' as const, marginLeft: '4px' },
 };
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
 function fmt(text: string) {
   const parts = text.split(/(```[\s\S]*?```)/g);
   return parts.map((part, i) => {
@@ -104,7 +108,9 @@ function fmt(text: string) {
       const code = part.split('\n').slice(1).join('\n').replace(/```$/, '').trimEnd();
       return <pre key={i} style={s.code}><code>{code}</code></pre>;
     }
-    const html = part
+    // Safe: escape HTML first, then apply markdown substitutions
+    const escaped = escapeHtml(part);
+    const html = escaped
       .replace(/\*\*(.*?)\*\*/g, '<strong style="color:#fff">$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.06);padding:1px 4px;border-radius:3px;font-size:0.8em">$1</code>')
@@ -184,21 +190,28 @@ export default function Home() {
 
   const activeMode = activeConv?.mode || 'chat';
 
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const convsRef = useRef(convs);
+  convsRef.current = convs;
+
   useEffect(() => {
-    if (!activeId) return;
-    let t: ReturnType<typeof setInterval>;
+    if (!activeIdRef.current) return;
+    const controller = new AbortController();
     const poll = async () => {
-      if (load) return;
+      const id = activeIdRef.current;
+      if (!id || load) return;
       try {
-        const r = await fetch('/api/proactive');
+        const r = await fetch('/api/proactive', { signal: controller.signal });
         const { messages } = await r.json();
         if (messages?.length > 0) {
           const newIds: string[] = [];
           for (const m of messages) {
-            const id = 'p-' + m.id;
-            if (seenProactive.current.has(id)) continue;
-            seenProactive.current.add(id);
-            updateConv(activeId, { messages: [...(convs.find(c => c.id === activeId)?.messages || []), { id, role: 'assistant', content: m.text }] });
+            const mid = 'p-' + m.id;
+            if (seenProactive.current.has(mid)) continue;
+            seenProactive.current.add(mid);
+            const curMsgs = convsRef.current.find(c => c.id === id)?.messages || [];
+            updateConv(id, { messages: [...curMsgs, { id: mid, role: 'assistant', content: m.text }] });
             newIds.push(m.id);
           }
           if (newIds.length > 0) {
@@ -206,15 +219,21 @@ export default function Home() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ ids: newIds }),
+              signal: controller.signal,
             });
           }
         }
-      } catch {}
+      } catch {
+        // Aborted requests are expected — ignore
+      }
     };
     poll();
-    t = setInterval(poll, 30000);
-    return () => clearInterval(t);
-  }, [activeId, load, convs, updateConv]);
+    const t = setInterval(poll, 30000);
+    return () => {
+      clearInterval(t);
+      controller.abort();
+    };
+  }, [load, updateConv]);
 
   const addMsg = useCallback((m: ChatMsg) => {
     if (!activeId) return;

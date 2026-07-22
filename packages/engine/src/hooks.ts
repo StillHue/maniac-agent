@@ -39,7 +39,9 @@ export async function runHooks(phase: HookPhase, ctx: HookContext): Promise<void
     if (h.tool !== '*' && h.tool !== ctx.tool) continue;
     try {
       await h.fn(ctx);
-    } catch {}
+    } catch (e) {
+      console.warn(`[hooks] Erro executando hook "${h.id}":`, e);
+    }
   }
 }
 

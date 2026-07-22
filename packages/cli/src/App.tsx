@@ -48,6 +48,7 @@ import { MessageItem } from './components/MessageItem.js';
 import { renderMarkdown } from './markdown.js';
 import { ACCENT } from './theme.js';
 import { LiveArea } from './components/LiveArea.js';
+import { ExpandableThought } from './components/ThoughtBlock.js';
 import { Footer } from './components/Footer.js';
 import { QueuePanel } from './components/QueuePanel.js';
 import { ModelWizard } from './components/ModelWizard.js';
@@ -59,6 +60,7 @@ import type {
   ToolCallView,
   SubagentStatus,
   PermissionPromptState,
+  ThoughtEntry,
 } from './ui-types.js';
 import { PERMISSION_OPTIONS } from './ui-types.js';
 
@@ -189,11 +191,20 @@ export function App({
   const [isLoading, setIsLoading] = useState(false);
   // Streaming response shown once, directly in the chat area (not the footer).
   const [liveText, setLiveText] = useState('');
+  const [liveThinking, setLiveThinking] = useState('');
+  /** Latest thought — only this one can expand (mutable). Older ones freeze into Static. */
+  const [latestThought, setLatestThought] = useState<ThoughtEntry | null>(null);
+  const latestThoughtRef = useRef<ThoughtEntry | null>(null);
+  const [thoughtExpanded, setThoughtExpanded] = useState(false);
   const [streamTools, setStreamTools] = useState<ToolCallView[]>([]);
   const [streamSubagents, setStreamSubagents] = useState<SubagentStatus[]>([]);
   const [subagentDispatchCount, setSubagentDispatchCount] = useState(0);
   const abortRef = useRef<{ aborted: boolean }>({ aborted: false });
   const abortControllerRef = useRef<AbortController | null>(null);
+  /** Guards double-Enter on Windows terminals. */
+  const submitLockRef = useRef(false);
+  /** Remount Static after a hard clear (Windows resize stamp fix). */
+  const [staticEpoch, setStaticEpoch] = useState(0);
 
   const [permPrompt, setPermPrompt] = useState<PermissionPromptState | null>(null);
   const permResolveRef = useRef<((d: PermissionPromptDecision) => void) | null>(null);
@@ -210,7 +221,7 @@ export function App({
       spinnerIdx.current = (spinnerIdx.current + 1) % SPINNER_FRAMES.length;
       setSpinnerFrame(SPINNER_FRAMES[spinnerIdx.current]);
       setElapsedSec(Math.floor((Date.now() - runStartRef.current) / 1000));
-    }, 120);
+    }, 220);
     return () => clearInterval(t);
   }, [isLoading]);
 
@@ -218,11 +229,28 @@ export function App({
     cols: process.stdout.columns || 120,
     rows: process.stdout.rows || 24,
   }));
+  const colsRef = useRef(termSize.cols);
+  colsRef.current = termSize.cols;
   useEffect(() => {
-    const onResize = () =>
-      setTermSize({ cols: process.stdout.columns || 120, rows: process.stdout.rows || 24 });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      // Debounce — Windows fires many resize events; each redraw can stamp UI.
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setTermSize({
+          cols: process.stdout.columns || 120,
+          rows: process.stdout.rows || 24,
+        });
+        // Hard clear + remount Static so Ink doesn't leave ghost copies (win32).
+        if (process.platform === 'win32' && process.stdout.isTTY) {
+          process.stdout.write('\x1b[2J\x1b[H');
+          setStaticEpoch((e) => e + 1);
+        }
+      }, 80);
+    };
     process.stdout.on('resize', onResize);
     return () => {
+      if (timer) clearTimeout(timer);
       process.stdout.off('resize', onResize);
     };
   }, []);
@@ -312,12 +340,14 @@ export function App({
       abortControllerRef.current = controller;
       setIsLoading(true);
       setLiveText('');
+      setLiveThinking('');
       setStreamTools([]);
       setStreamSubagents([]);
       setSubagentDispatchCount(0);
 
       let fullText = '';
       let cleanedText = '';
+      let thinkingText = '';
       const tools: ToolCallView[] = [];
       const subagents: SubagentStatus[] = [];
 
@@ -331,6 +361,7 @@ export function App({
         runningRef.current = false;
         setIsLoading(false);
         setLiveText('');
+        setLiveThinking('');
         setStreamTools([]);
         setStreamSubagents([]);
         setSubagentDispatchCount(0);
@@ -358,8 +389,9 @@ export function App({
                 break;
               }
               case 'reasoning': {
-                // Model chain-of-thought — keep it off the transcript.
-                // The Footer spinner already signals that work is in progress.
+                // Grok-inspired thinking stream — show while working, not in transcript.
+                thinkingText += event.content;
+                setLiveThinking(thinkingText);
                 break;
               }
               case 'tool_start': {
@@ -476,11 +508,30 @@ export function App({
         return;
       }
 
-      if (fullText.trim() || tools.length > 0) {
+      if (fullText.trim() || tools.length > 0 || subagents.length > 0) {
         setStaticItems((prev) => [
           ...prev,
-          { type: 'assistant', id: nextId(), text: fullText, tools: [...tools] },
+          {
+            type: 'assistant',
+            id: nextId(),
+            text: fullText,
+            tools: [...tools],
+            subagents: subagents.length > 0 ? [...subagents] : undefined,
+          },
         ]);
+      }
+      if (thinkingText.trim()) {
+        const tid = nextId();
+        const entry = { id: tid, text: thinkingText.trim() };
+        // Freeze into Static (no redraw ghosts). Latest kept for Ctrl+E expand.
+        setStaticItems((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.type === 'thought' && last.text === entry.text) return prev;
+          return [...prev, { type: 'thought' as const, id: tid, text: entry.text }];
+        });
+        latestThoughtRef.current = entry;
+        setLatestThought(entry);
+        setThoughtExpanded(false);
       }
       if (fullText.trim()) {
         setChatHistory((prev) => {
@@ -505,18 +556,21 @@ export function App({
       abortControllerRef.current = controller;
       setIsLoading(true);
       setLiveText('');
+      setLiveThinking('');
       setStreamTools([]);
       setStreamSubagents([]);
       setSubagentDispatchCount(0);
       setShowBanner(false);
 
       let fullText = '';
+      let thinkingText = '';
       const tools: ToolCallView[] = [];
 
       const clearLive = () => {
         runningRef.current = false;
         setIsLoading(false);
         setLiveText('');
+        setLiveThinking('');
         setStreamTools([]);
         setStreamSubagents([]);
         setSubagentDispatchCount(0);
@@ -546,6 +600,8 @@ export function App({
                 setLiveText(fullText);
                 break;
               case 'reasoning':
+                thinkingText += event.content;
+                setLiveThinking(thinkingText);
                 break;
               case 'tool_start': {
                 const tc: ToolCallView = { tool: event.tool, args: event.args, done: false };
@@ -582,6 +638,18 @@ export function App({
             ...prev,
             { type: 'assistant', id: nextId(), text: text || report, tools: [...tools] },
           ]);
+        }
+        if (thinkingText.trim()) {
+          const tid = nextId();
+          const entry = { id: tid, text: thinkingText.trim() };
+          setStaticItems((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.type === 'thought' && last.text === entry.text) return prev;
+            return [...prev, { type: 'thought' as const, id: tid, text: entry.text }];
+          });
+          latestThoughtRef.current = entry;
+          setLatestThought(entry);
+          setThoughtExpanded(false);
         }
       } catch (e: unknown) {
         if (!abort.aborted) {
@@ -688,6 +756,9 @@ export function App({
           setChatHistory([]);
           setSessionId(undefined);
           setStaticItems([]);
+          latestThoughtRef.current = null;
+          setLatestThought(null);
+          setThoughtExpanded(false);
           setShowBanner(true);
           break;
 
@@ -992,6 +1063,13 @@ export function App({
       const trimmed = text.trim();
       if (!trimmed) return;
 
+      // Windows terminals sometimes deliver Enter twice.
+      if (submitLockRef.current) return;
+      submitLockRef.current = true;
+      setTimeout(() => {
+        submitLockRef.current = false;
+      }, 250);
+
       appendHistory(trimmed);
       cmdHistory.current.push(trimmed);
       historyIdx.current = -1;
@@ -1033,7 +1111,11 @@ export function App({
         }
       }
 
-      setStaticItems((prev) => [...prev, { type: 'user', id: nextId(), text: trimmed }]);
+      setStaticItems((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.type === 'user' && last.text === trimmed) return prev;
+        return [...prev, { type: 'user', id: nextId(), text: trimmed }];
+      });
       const newHistory = [...chatHistory, { role: 'user' as const, content: trimmed }];
       chatHistoryRef.current = newHistory;
       setChatHistory(newHistory);
@@ -1117,6 +1199,13 @@ export function App({
       // explicitly an image shortcut). Otherwise fall through so a lone 'v'
       // isn't typed — but we still return to avoid inserting the letter.
       if (attached || key.meta) return;
+      return;
+    }
+
+    // Ctrl+E → expand/collapse most recent thought (full text in mutable panel)
+    if (key.ctrl && inputChar === 'e') {
+      if (!latestThoughtRef.current) return;
+      setThoughtExpanded((v) => !v);
       return;
     }
 
@@ -1254,19 +1343,26 @@ export function App({
 
   return (
     <Box flexDirection="column">
-      <Static items={staticItems}>
+      <Static key={staticEpoch} items={staticItems}>
         {(item: StaticItem) => (
           <Box
             key={item.id}
-            // Static items don't inherit the terminal width in Ink, so "100%"
-            // resolves to the content's intrinsic size and long lines overflow
-            // instead of word-wrapping. An explicit column width fixes it.
-            width={cols}
+            // Prefer live stdout columns via ref so resize state churn does not
+            // couple into Static item identity more than necessary.
+            width={colsRef.current}
           >
             <MessageItem item={item} />
           </Box>
         )}
       </Static>
+
+      {thoughtExpanded && latestThought ? (
+        <ExpandableThought entry={latestThought} expanded />
+      ) : latestThought ? (
+        <Box paddingLeft={2} marginBottom={0}>
+          <Text dimColor>ctrl+e expand last thought</Text>
+        </Box>
+      ) : null}
 
       {showBanner && !isLoading && <Banner />}
 
@@ -1277,6 +1373,7 @@ export function App({
           dispatchCount={subagentDispatchCount}
           maxLines={toolCap}
           spinnerFrame={spinnerFrame}
+          thinking={liveThinking}
         />
       )}
 
@@ -1319,6 +1416,9 @@ export function App({
         queueSize={queueEntries.length}
         sessionId={sessionId}
       />
+      {/* Leave one blank row so Ink rarely hits exact fullscreen height on Windows
+          (that path leaves stale frame copies on every spinner tick). */}
+      <Text> </Text>
     </Box>
   );
 }

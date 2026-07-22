@@ -1,10 +1,11 @@
 import { ChatMessage } from '@maniac/types';
 import { callOpenCode } from './opencode';
 import { executeToolCall, parseToolCalls, stripToolCalls } from './tools';
+import { resolveToolCallsFromCompletion, buildOpenAITools } from './openai-tools';
 import type { PermissionMode } from './permissions';
 import type { PermissionPromptDecision } from './engine';
 
-const MAX_CHILD_ITERATIONS = 20;
+const MAX_CHILD_ITERATIONS = 50;
 const BLOCKED_TOOLS = new Set([
   'delegate',
   'memory_save',
@@ -19,7 +20,7 @@ const BLOCKED_TOOLS = new Set([
   'self_restart',
 ]);
 
-let MAX_SUBAGENT_CONCURRENCY = 3;
+let MAX_SUBAGENT_CONCURRENCY = 4;
 
 export function setMaxSubagentConcurrency(n: number): void {
   MAX_SUBAGENT_CONCURRENCY = Math.max(1, Math.min(8, n));
@@ -87,7 +88,7 @@ Rules:
   let finalReply = '';
   let tokenCount = 0;
   const cwd = config.cwd || process.cwd();
-  const timeoutMs = config.timeoutMs ?? 180_000;
+  const timeoutMs = config.timeoutMs ?? 300_000;
   const controller = new AbortController();
   const onParentAbort = () => controller.abort();
   config.signal?.addEventListener('abort', onParentAbort);
@@ -100,16 +101,22 @@ Rules:
       }
 
       let reply = '';
+      let toolCalls: { type: string; command: string }[] = [];
       try {
-        reply = await callOpenCode(messages, (event) => {
-          if (event.type === 'token') callbacks.onToken?.(event.content);
-        });
+        const completion = await callOpenCode(
+          messages,
+          (event) => {
+            if (event.type === 'token') callbacks.onToken?.(event.content);
+          },
+          { tools: buildOpenAITools(toolList) },
+        );
+        reply = completion.content;
+        toolCalls = resolveToolCallsFromCompletion(completion, parseToolCalls);
       } catch {
         break;
       }
 
       tokenCount += reply.length;
-      const toolCalls = parseToolCalls(reply); // no fence→exec recovery in children
       if (toolCalls.length === 0) {
         finalReply = reply;
         break;

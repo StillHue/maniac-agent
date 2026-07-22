@@ -3,6 +3,12 @@ export type { EngineRunOptions, PermissionPromptDecision } from './engine';
 export { defaultHarness } from './harness';
 export type { AgentHarness } from './harness';
 export { callOpenCode, getActiveProvider, setActiveProvider, getProviderHistory } from './opencode';
+export type { CompletionResult, NativeToolCall } from './openai-tools';
+export {
+  buildOpenAITools,
+  nativeArgsToCommand,
+  resolveToolCallsFromCompletion,
+} from './openai-tools';
 export { loadManiacConfig, saveManiacConfig, fetchModels, PROVIDER_DEFS, AUTO_SLOTS, getConfiguredProviders, hasUsableProvider } from './config';
 export type { ManiacConfig, ProviderDef, AutoRouterSlot } from './config';
 export { registerHook, unregisterHook, listHooks } from './hooks';

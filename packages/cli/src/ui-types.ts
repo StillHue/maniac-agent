@@ -15,9 +15,25 @@ export interface SubagentStatus {
   tokenSnippet: string;
 }
 
+export interface ThoughtEntry {
+  id: number;
+  text: string;
+}
+
 export type StaticItem =
   | { type: 'user'; id: number; text: string }
-  | { type: 'assistant'; id: number; text: string; tools: ToolCallView[] }
+  | {
+      type: 'assistant';
+      id: number;
+      text: string;
+      tools: ToolCallView[];
+      subagents?: SubagentStatus[];
+    }
+  | {
+      type: 'thought';
+      id: number;
+      text: string;
+    }
   | { type: 'system'; id: number; text: string; variant: 'info' | 'error' | 'success' | 'warn' };
 
 export interface PermissionPromptState {

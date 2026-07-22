@@ -25,7 +25,9 @@ export function touchLastActivity(): void {
   try {
     ensureDir();
     fs.writeFileSync(LAST_ACTIVITY_FILE, String(Date.now()), 'utf8');
-  } catch {}
+  } catch (e) {
+    console.debug('[proactive] touchLastActivity falhou:', e);
+  }
 }
 
 export function getLastActivity(): number {
@@ -59,7 +61,9 @@ function getPendingMessages(): PendingMessage[] {
     if (fs.existsSync(PROACTIVE_FILE)) {
       return JSON.parse(fs.readFileSync(PROACTIVE_FILE, 'utf8'));
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[proactive] getPendingMessages falhou:', e);
+  }
   return [];
 }
 
@@ -107,11 +111,12 @@ Regras:
 
   try {
     const response = await callOpenCode(msgs);
-    const trimmed = response?.trim() || '';
+    const trimmed = response.content?.trim() || '';
     if (trimmed === '∅' || trimmed === '') return null;
     enqueueProactiveMessage(trimmed);
     return trimmed;
-  } catch {
+  } catch (e) {
+    console.warn('[proactive] proactivePulse error:', e);
     return null;
   }
 }

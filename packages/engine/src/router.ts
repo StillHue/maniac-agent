@@ -1,7 +1,7 @@
 import { EngineMode } from '@maniac/types';
 import { getMemorySnapshot, buildMemoryBlock } from './memory';
 import { buildSkillsBlock } from './skills';
-import { getUndeliveredMessages } from './proactive';
+import { getUndeliveredMessages, type PendingMessage } from './proactive';
 
 const CODE_VERBS = /^(?:crie|cria|criar|adicione?|adiciona|modifique?|modifica|remova?|remove|delete?|deleta|edite?|edita|execute?|executa|rode|roda|compile?|instale?|instala|deploy|gere|gera|corrige?|corrigir|refatore?|refatora|teste?|testa|git\s+|npm\s+|yarn\s+|faça|faz|fazer|altere|altera|mostre|mostra|mostrar)/i;
 
@@ -76,6 +76,8 @@ Construa ativamente sua base de conhecimento. Crie paginas interligadas com [[wi
 Formate respostas com markdown e, quando útil, use ANSI escape codes para cor (ex: \x1b[36m para ciano). Divida blocos de texto com linhas em branco. Não exagere nas cores — só realce títulos e resultados importantes.
 
 ANTES de usar qualquer ferramenta, escreva em 1-2 linhas o que vai fazer e por que — ex: "Ok, vou listar os arquivos da pasta para entender a estrutura, depois ler os relevantes." Isso aparece no terminal antes das ações. Seja direto, sem enrolação. Depois das ferramentas, sintetize o resultado.
+
+As ferramentas tambem sao expostas via function calling nativo (OpenAI tools). Prefira tool_calls nativos quando o provider suportar; o protocolo [TOOL:nome]args[/TOOL] continua valido como fallback.
 
 PENSE ANTES DE AGIR. Para cada request, siga este fluxo mental:
 1. Entenda o que o usuario quer
@@ -206,7 +208,7 @@ export function getSystemPrompt(mode: EngineMode, repoPath?: string): string {
   const pending = getUndeliveredMessages();
   if (pending.length > 0) {
     proactiveBlock = '\n\n---\n## Mensagens Proativas (não lidas)\n' +
-      pending.map(m => `- [${new Date(m.createdAt).toISOString()}] ${m.text}`).join('\n') +
+      pending.map((m: PendingMessage) => `- [${new Date(m.createdAt).toISOString()}] ${m.text}`).join('\n') +
       '\n---\n';
   }
 

@@ -36,7 +36,9 @@ export function acquireRunLock(cwd: string, runId: string): RunLock | null {
         return null;
       }
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[run-lock] acquireRunLock stale:', e);
+  }
   const lock: RunLock = {
     runId,
     pid: process.pid,
@@ -55,15 +57,22 @@ export function releaseRunLock(token?: string): void {
       const existing: RunLock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
       if (existing.token !== token) return;
     }
-    fs.unlinkSync(LOCK_FILE);
-  } catch {}
+  } catch (e) {
+    console.debug('[run-lock] releaseRunLock:', e);
+  }
+  try {
+    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+  } catch (e) {
+    console.debug('[run-lock] releaseRunLock unlink:', e);
+  }
 }
 
 export function readRunLock(): RunLock | null {
   try {
     if (!fs.existsSync(LOCK_FILE)) return null;
     return JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
-  } catch {
+  } catch (e) {
+    console.debug('[run-lock] readRunLock:', e);
     return null;
   }
 }

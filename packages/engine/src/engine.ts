@@ -1,7 +1,11 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { ChatMessage, EngineMode, StreamEvent } from '@maniac/types';
 import { callOpenCode } from './opencode';
 import { executeToolCall, parseToolCalls, stripToolCalls } from './tools';
+import { resolveToolCallsFromCompletion } from './openai-tools';
 import { getSystemPrompt, CONTEXT_LIMIT } from './router';
 import { saveMemory, saveUserProfile, readMemory } from './memory';
 import { listSkills, viewSkill, createSkill } from './skills';
@@ -13,14 +17,14 @@ import { runCurator, getCuratorStatus, startCurator, stopCurator } from './curat
 import { touchLastActivity, enqueueProactiveMessage, proactivePulse } from './proactive';
 import { runHooks, registerHook } from './hooks';
 import {
-  saveCheckpoint, clearCheckpoint, heartbeat, loadCheckpoint,
+  saveCheckpoint, flushCheckpoint, clearCheckpoint, heartbeat, loadCheckpoint,
   reportCrash, checkResume, cleanImmortalityState,
   immortalitySummary, getImmortalityStatus,
 } from './immortality';
 import { toolFingerprint } from './resume';
 import { acquireRunLock, releaseRunLock } from './run-lock';
 import { loadAutonomyConfig } from './autonomy';
-import { detectAndEnqueueProposals } from './proposals';
+import { detectAndEnqueueProposals, type ImprovementProposal } from './proposals';
 import {
   evaluatePermission,
   loadPermissionConfig,
@@ -44,10 +48,12 @@ const CWD = (() => {
   ];
   for (const dir of candidates) {
     try {
-      if (require('fs').existsSync(path.join(dir, 'package.json'))) {
+      if (fs.existsSync(path.join(dir, 'package.json'))) {
         return dir;
       }
-    } catch {}
+    } catch (e) {
+      console.debug('[engine] Erro ao resolver CWD (resolveEnginePkg):', e);
+    }
   }
   return process.cwd();
 })();
@@ -96,6 +102,7 @@ let sessionInit = false;
 function setupCrashHandlers(): void {
   if (typeof process !== 'undefined') {
     process.on('uncaughtException', (err) => {
+      flushCheckpoint();
       reportCrash(err);
       heartbeat('running'); // último heartbeat antes de morrer
       console.error('[Immortality] ☠️ Crash detectado, checkpoint salvo. Detalhes em ~/.maniac/crash.json');
@@ -103,6 +110,7 @@ function setupCrashHandlers(): void {
 
     process.on('unhandledRejection', (reason) => {
       const err = reason instanceof Error ? reason : new Error(String(reason));
+      flushCheckpoint();
       reportCrash(err);
       heartbeat('running');
       console.error('[Immortality] ☠️ Unhandled rejection detectada, checkpoint salvo.');
@@ -224,16 +232,17 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
 
     // Built-in audit hook: log destructive tool calls to ~/.maniac/audit.log
     const AUDIT_TOOLS = new Set(['write', 'edit', 'exec', 'source_edit', 'rebuild_engine', 'self_restart', 'proposal_apply']);
-    const auditPath = require('path').join(require('os').homedir(), '.maniac', 'audit.log');
-    const { appendFileSync, mkdirSync } = require('fs');
+    const auditPath = path.join(os.homedir(), '.maniac', 'audit.log');
     registerHook('*', 'post', (ctx) => {
       if (!AUDIT_TOOLS.has(ctx.tool)) return;
       const ts = new Date().toISOString();
       const line = `${ts}  ${ctx.tool}  ${ctx.args.slice(0, 120).replace(/\n/g, '↵')}  →  ${ctx.result?.success ? 'ok' : 'fail'}\n`;
       try {
-        mkdirSync(require('path').dirname(auditPath), { recursive: true });
-        appendFileSync(auditPath, line);
-      } catch {}
+        fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+        fs.appendFileSync(auditPath, line);
+      } catch (e) {
+        console.debug('[engine] audit log falhou:', e);
+      }
     });
 
     // Proposal-only autonomy: detect opportunities; never apply in background
@@ -243,10 +252,12 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
         const props = detectAndEnqueueProposals();
         if (props.length) {
           enqueueProactiveMessage(
-            `New improvement proposals (${props.length}): ${props.map((p) => p.id).join(', ')}. Review with /proposals or approve with /approve <id>.`,
+            `New improvement proposals (${props.length}): ${props.map((p: ImprovementProposal) => p.id).join(', ')}. Review with /proposals or approve with /approve <id>.`,
           );
         }
-      } catch {}
+      } catch (e) {
+        console.warn('[engine] proposal detect falhou:', e);
+      }
     }, autoCfg.proposalIntervalMs);
     setInterval(() => {
       void proactivePulse().then((t) => {
@@ -302,15 +313,20 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     }
 
     let reply = '';
+    let completionToolCalls: { type: string; command: string }[] = [];
     try {
-      reply = await callOpenCode(messages, onEvent);
+      const completion = await callOpenCode(messages, onEvent);
+      reply = completion.content;
+      completionToolCalls = resolveToolCallsFromCompletion(completion, parseToolCalls, {
+        recoverShellFences: true,
+      });
     } catch (e: any) {
       onEvent({ type: 'error', message: e.message });
       if (runLock) releaseRunLock(runLock.token);
       return finalReply || `Erro: ${e.message}`;
     }
 
-    const toolCalls = parseToolCalls(reply, { recoverShellFences: true });
+    const toolCalls = completionToolCalls;
 
     if (toolCalls.length === 0) {
       const visible = stripToolCalls(reply) || reply.trim();
@@ -639,6 +655,7 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
       });
     }
     reportCrash(e instanceof Error ? e : new Error(errMsg));
+    flushCheckpoint();
     onEvent({ type: 'error', message: errMsg });
     if (runLock) releaseRunLock(runLock.token);
     return finalReply || `Erro no engine: ${errMsg}`;
@@ -704,10 +721,12 @@ async function executeMcpTool(toolKey: string, argsString: string): Promise<{ su
     if (mcpTool) {
       return await callMcpTool(mcpTool.qualifiedName, args);
     }
-  } catch {}
+  } catch (e) {
+    console.warn('[engine] MCP call fallback falhou:', e);
+  }
 
   // Fallback: search config files for server definition
-  const home = require('os').homedir();
+  const home = os.homedir();
   const candidatePaths = [
     process.env.MCP_CONFIG_PATH || '',
     process.env.OPENCODE_CONFIG || '',
@@ -719,11 +738,13 @@ async function executeMcpTool(toolKey: string, argsString: string): Promise<{ su
 
   for (const p of candidatePaths) {
     try {
-      const raw = require('fs').readFileSync(p, 'utf8');
+      const raw = fs.readFileSync(p, 'utf8');
       const data = JSON.parse(raw.replace(/\/\/.*$/gm, ''));
       const server = data.mcpServers?.[serverName] || data.mcp?.[serverName];
       if (server) return await callMcpServer(server, toolName, args);
-    } catch {}
+    } catch (e) {
+      console.debug(`[engine] config ${p} falhou:`, e);
+    }
   }
 
   return { success: false, output: `Servidor MCP "${serverName}" nao encontrado. Use [TOOL:mcp] para configurar.` };
@@ -787,17 +808,27 @@ async function callHttpMcp(config: any, toolName: string, args: any): Promise<{ 
 }
 
 async function spawnMcpServer(config: any, toolName: string, args: any): Promise<{ success: boolean; output: string }> {
-  const { spawn } = require('child_process');
-
   return new Promise((resolve) => {
     if (!config.command) {
       resolve({ success: false, output: 'Comando MCP nao configurado' });
       return;
     }
 
+    // Whitelist: only pass known-safe env vars + MCP-specific ones (never leak secrets)
+    const SAFE_ENV_KEYS = new Set([
+      'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP',
+      'SystemRoot', 'windir', 'SHELL', 'TERM', 'LANG', 'LC_ALL',
+      'NODE_PATH',
+    ]);
+    const safeEnv: Record<string, string> = {};
+    for (const key of SAFE_ENV_KEYS) {
+      if (process.env[key]) safeEnv[key] = process.env[key]!;
+    }
+    if (config.env) Object.assign(safeEnv, config.env);
+
     const child = spawn(config.command, config.args || [], {
       shell: process.env.SHELL || 'cmd.exe',
-      env: { ...process.env, ...config.env },
+      env: safeEnv,
     });
 
     let stdoutData = '';
@@ -806,8 +837,8 @@ async function spawnMcpServer(config: any, toolName: string, args: any): Promise
 
     const cleanup = () => {
       clearTimeout(timeout);
-      try { child.stdin.end(); } catch {}
-      try { child.kill(); } catch {}
+      try { child.stdin.end(); } catch (e) { console.debug('[engine] stdin end falhou:', e); }
+      try { child.kill(); } catch (e) { console.debug('[engine] child kill falhou:', e); }
     };
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -837,10 +868,10 @@ async function spawnMcpServer(config: any, toolName: string, args: any): Promise
               resolve({ success: true, output: JSON.stringify(response.result) });
             }
           }
-        } catch {}
+        } catch (e) {
+          console.debug('[engine] parse response falhou:', e);
+        }
       }
-
-      stdoutData = lines[lines.length - 1];
     });
 
     child.on('error', (err: Error) => {

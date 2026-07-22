@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import { getSession } from '../../../lib/session';
 
@@ -21,11 +21,10 @@ export async function POST(req: NextRequest) {
     const instruction = fs.readFileSync(NEXT_INSTR, 'utf8').trim();
     console.log(`[ContinueLoop] Running for ${session.repo}: ${instruction.slice(0, 120)}`);
 
-    const escaped = instruction.replace(/"/g, '\\"');
-    const cmd = `agent -p "Read C:\\Users\\gabdr\\agent-session\\next-instruction.md and execute the instruction. After completing, save a detailed summary to C:\\Users\\gabdr\\agent-session\\last-result.md" -y --print`;
+    const promptText = 'Read C:\\Users\\gabdr\\agent-session\\next-instruction.md and execute the instruction. After completing, save a detailed summary to C:\\Users\\gabdr\\agent-session\\last-result.md';
 
     const result = await new Promise<string>((resolve) => {
-      exec(cmd, { cwd: session.workspace, shell: 'cmd.exe', timeout: 600000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile('agent', ['-p', promptText, '-y', '--print'], { cwd: session.workspace, timeout: 600000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr || err.message || '').slice(0, 4000);
           resolve(msg || 'Erro desconhecido');

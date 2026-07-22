@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -124,13 +124,11 @@ export async function POST(req: NextRequest) {
     const targetDir = repoPath || HOME;
     const fullPrompt = task;
     const repo = path.basename(targetDir);
-    const escaped = fullPrompt.replace(/"/g, '\\"');
     const beforeSession = findLatestSession();
 
     // Run agent in non-interactive mode (--print -y), capture output
-    const agentCmd = `agent --print -y "${escaped}"`;
     const agentPromise = new Promise<string>((resolve) => {
-      exec(agentCmd, { cwd: targetDir, shell: 'cmd.exe', timeout: 600000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile('agent', ['--print', '-y', fullPrompt], { cwd: targetDir, timeout: 600000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
         const output = (stdout?.trim() || stderr?.trim() || err?.message || '').slice(0, 16000);
         console.log(`[Goal] Agent process done (${output.length} chars)`);
         resolve(output);

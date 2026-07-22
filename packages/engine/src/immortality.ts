@@ -107,7 +107,8 @@ function getSessionId(): string {
       } else {
         _sessionId = `${process.pid}-${Date.now()}`;
       }
-    } catch {
+    } catch (e) {
+      console.debug('[Immortality] getSessionId:', e);
       _sessionId = `${process.pid}-${Date.now()}`;
     }
   }
@@ -116,7 +117,59 @@ function getSessionId(): string {
 
 // ─── Checkpoint ────────────────────────────────────────────────────────────
 
+// ─── Checkpoint Debounce ───────────────────────────────────────────────────
+// Avoids writing to disk more often than every DEBOUNCE_MS (configurable).
+let CHECKPOINT_DEBOUNCE_MS = 2000;
+let lastCheckpointTime = 0;
+let pendingCheckpoint: (() => void) | null = null;
+let checkpointTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function setCheckpointDebounce(ms: number): void {
+  CHECKPOINT_DEBOUNCE_MS = ms;
+}
+
 export function saveCheckpoint(state: {
+  messages: ChatMessage[];
+  mode: EngineMode;
+  lastUserMessage: string;
+  lastAssistantReply: string;
+  toolExecutionIndex: number;
+  totalToolExecutions: number;
+  runId?: string;
+  sessionId?: string | null;
+  phase?: CheckpointData['phase'];
+  permissionMode?: string;
+  repoPath?: string;
+  toolBatch?: CheckpointData['toolBatch'];
+  lockToken?: string;
+}): void {
+  // Debounce rapid tool-call checkpoints to reduce disk I/O.
+  // Critical writes (e.g. crash recovery) should call flushCheckpoint() instead.
+  const now = Date.now();
+  if (state.toolBatch && now - lastCheckpointTime < CHECKPOINT_DEBOUNCE_MS) {
+    // Store latest state and schedule a write
+    pendingState = state;
+    if (!checkpointTimer) {
+      checkpointTimer = setTimeout(() => {
+        checkpointTimer = null;
+        if (pendingState) {
+          doSaveCheckpoint(pendingState);
+          pendingState = null;
+        }
+      }, CHECKPOINT_DEBOUNCE_MS);
+    }
+    return;
+  }
+  // Cancel pending debounced write and flush immediately
+  if (checkpointTimer) {
+    clearTimeout(checkpointTimer);
+    checkpointTimer = null;
+    pendingState = null;
+  }
+  doSaveCheckpoint(state);
+}
+
+function doSaveCheckpoint(state: {
   messages: ChatMessage[];
   mode: EngineMode;
   lastUserMessage: string;
@@ -158,11 +211,25 @@ export function saveCheckpoint(state: {
       toolBatch: state.toolBatch,
     };
     atomicWrite(CHECKPOINT_FILE, JSON.stringify(data, null, 2));
+    lastCheckpointTime = Date.now();
   } catch (e) {
     console.error('[Immortality] Erro ao salvar checkpoint:', (e as Error).message);
   }
 }
 
+let pendingState: Parameters<typeof doSaveCheckpoint>[0] | null = null;
+
+/** Flush any pending debounced checkpoint immediately (e.g. on crash/shutdown). */
+export function flushCheckpoint(): void {
+  if (checkpointTimer) {
+    clearTimeout(checkpointTimer);
+    checkpointTimer = null;
+  }
+  if (pendingState) {
+    doSaveCheckpoint(pendingState);
+    pendingState = null;
+  }
+}
 export function loadCheckpoint(): CheckpointData | null {
   try {
     if (!fs.existsSync(CHECKPOINT_FILE)) return null;
@@ -170,7 +237,8 @@ export function loadCheckpoint(): CheckpointData | null {
     const data = JSON.parse(raw) as CheckpointData;
     if (data.version !== 1 && data.version !== 2) return null;
     return data;
-  } catch {
+  } catch (e) {
+    console.debug('[immortality] loadCheckpoint falhou:', e);
     return null;
   }
 }
@@ -178,7 +246,9 @@ export function loadCheckpoint(): CheckpointData | null {
 export function clearCheckpoint(): void {
   try {
     if (fs.existsSync(CHECKPOINT_FILE)) fs.unlinkSync(CHECKPOINT_FILE);
-  } catch {}
+  } catch (e) {
+    console.debug('[Immortality] Erro ao limpar checkpoint:', e);
+  }
 }
 
 // ─── Heartbeat ──────────────────────────────────────────────────────────────
@@ -193,7 +263,9 @@ export function heartbeat(status: HeartbeatData['status'] = 'running'): void {
       status,
     };
     atomicWrite(HEARTBEAT_FILE, JSON.stringify(data));
-  } catch {}
+  } catch (e) {
+    console.debug('[Immortality] Erro ao escrever heartbeat:', e);
+  }
 }
 
 export function getHeartbeatAge(): number {
@@ -202,7 +274,8 @@ export function getHeartbeatAge(): number {
     const raw = fs.readFileSync(HEARTBEAT_FILE, 'utf8');
     const data = JSON.parse(raw) as HeartbeatData;
     return Date.now() - data.timestamp;
-  } catch {
+  } catch (e) {
+    console.debug('[Immortality] Erro ao ler heartbeat age:', e);
     return -1;
   }
 }
@@ -211,7 +284,8 @@ export function getHeartbeat(): HeartbeatData | null {
   try {
     if (!fs.existsSync(HEARTBEAT_FILE)) return null;
     return JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8'));
-  } catch {
+  } catch (e) {
+    console.debug('[Immortality] Erro ao ler heartbeat:', e);
     return null;
   }
 }
@@ -291,7 +365,8 @@ export function loadCrashReport(): CrashReport | null {
   try {
     if (!fs.existsSync(CRASH_FILE)) return null;
     return JSON.parse(fs.readFileSync(CRASH_FILE, 'utf8'));
-  } catch {
+  } catch (e) {
+    console.debug('[Immortality] Erro ao ler crash report:', e);
     return null;
   }
 }
@@ -299,7 +374,9 @@ export function loadCrashReport(): CrashReport | null {
 export function clearCrashReport(): void {
   try {
     if (fs.existsSync(CRASH_FILE)) fs.unlinkSync(CRASH_FILE);
-  } catch {}
+  } catch (e) {
+    console.debug('[Immortality] Erro ao limpar crash report:', e);
+  }
 }
 
 // ─── Métricas de Imortalidade ──────────────────────────────────────────────
@@ -326,6 +403,11 @@ export function getImmortalityStatus(): ImmortalityStatus {
 function atomicWrite(filePath: string, content: string): void {
   const tmp = filePath + '.tmp.' + process.pid;
   fs.writeFileSync(tmp, content, 'utf8');
+  // Windows: renameSync to existing target silently fails or leaves tmp behind.
+  // Remove target first, then rename (closest to atomic we get without fs.rename + EXDEV risks).
+  try { fs.unlinkSync(filePath); } catch (e) {
+    console.debug('[Immortality] atomicWrite unlink (esperado se arquivo não existe):', e);
+  }
   fs.renameSync(tmp, filePath);
 }
 
@@ -334,7 +416,9 @@ export function cleanImmortalityState(): void {
   clearCrashReport();
   try {
     if (fs.existsSync(HEARTBEAT_FILE)) fs.unlinkSync(HEARTBEAT_FILE);
-  } catch {}
+  } catch (e) {
+    console.debug('[Immortality] Erro ao limpar heartbeat:', e);
+  }
 }
 
 export function immortalitySummary(): string {

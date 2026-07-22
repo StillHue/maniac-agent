@@ -69,7 +69,9 @@ export function listProposals(status?: ProposalStatus): ImprovementProposal[] {
     try {
       const p = JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')) as ImprovementProposal;
       if (!status || p.status === status) items.push(p);
-    } catch {}
+    } catch (e) {
+      console.debug('[proposals] listProposals parse:', e);
+    }
   }
   return items.sort((a, b) => b.updatedAt - a.updatedAt);
 }

@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 
 const HOME = 'C:\\Users\\gabdr';
 
@@ -11,11 +11,9 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[Task] Received: ${text.slice(0, 100)}`);
-    const escaped = text.replace(/"/g, '\\"');
-    const cmd = `agent --trust -p "${escaped}"`;
 
     const result = await new Promise<string>((resolve) => {
-      exec(cmd, { cwd: HOME, shell: 'cmd.exe', timeout: 180000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile('agent', ['--trust', '-p', text], { cwd: HOME, timeout: 180000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
         if (err) resolve(stderr?.slice(0, 500) || err.message);
         else resolve(stdout?.trim() || '(sem resposta)');
       });

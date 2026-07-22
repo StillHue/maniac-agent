@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createProposal, scoreEvidence, type ImprovementProposal } from './store';
 import { isProposalOnly } from '../autonomy';
+import { enqueueProactiveMessage } from '../proactive';
 
 const STALE_DAYS = 30;
 const SKILLS_DIR = path.join(__dirname, '..', 'skills');
@@ -44,7 +45,9 @@ export function detectCuratorArchiveProposals(): ImprovementProposal[] {
         if (p) out.push(p);
       }
     }
-  } catch {}
+  } catch (e) {
+    console.debug('[curator] detectCuratorArchiveProposals:', e);
+  }
   return out;
 }
 
@@ -56,9 +59,15 @@ export function recordSkillUsage(name: string, event: 'view' | 'create' | 'fail'
       path.join(dir, 'skills-usage.jsonl'),
       JSON.stringify({ t: Date.now(), name, event }) + '\n',
     );
-  } catch {}
+  } catch (e) {
+    console.debug('[curator] recordSkillUsage:', e);
+  }
 }
 
 export function detectAndEnqueueProposals(): ImprovementProposal[] {
-  return detectCuratorArchiveProposals();
+  const proposals = detectCuratorArchiveProposals();
+  for (const p of proposals) {
+    enqueueProactiveMessage(`New proposal: ${p.title} (${p.id})`);
+  }
+  return proposals;
 }
