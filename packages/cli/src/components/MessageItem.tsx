@@ -18,7 +18,7 @@ export function MessageItem({ item }: { item: StaticItem }) {
   }
 
   if (item.type === 'thought') {
-    return <ThoughtStaticLine text={item.text} />;
+    return <ThoughtStaticLine text={item.text} durationMs={item.durationMs} />;
   }
 
   if (item.type === 'assistant') {
@@ -26,6 +26,11 @@ export function MessageItem({ item }: { item: StaticItem }) {
       item.tools.length > 0 || (item.subagents && item.subagents.length > 0);
     return (
       <Box flexDirection="column" paddingLeft={2} paddingRight={2} marginBottom={1}>
+        {item.thought ? (
+          <Box marginBottom={item.text || hasChrome ? 1 : 0} flexDirection="column">
+            <ThoughtStaticLine text={item.thought} durationMs={item.thoughtDurationMs} bare />
+          </Box>
+        ) : null}
         {item.tools.length > 0 ? (
           <ToolSection tools={item.tools} showOutput />
         ) : null}

@@ -201,10 +201,26 @@ export function App({
   // Streaming response shown once, directly in the chat area (not the footer).
   const [liveText, setLiveText] = useState('');
   const [liveThinking, setLiveThinking] = useState('');
-  /** Latest thought — only this one can expand (mutable). Older ones freeze into Static. */
   const [latestThought, setLatestThought] = useState<ThoughtEntry | null>(null);
   const latestThoughtRef = useRef<ThoughtEntry | null>(null);
   const [thoughtExpanded, setThoughtExpanded] = useState(false);
+  /** Latest assistant turn kept mutable so thought can expand above the reply. */
+  type AssistantItem = Extract<StaticItem, { type: 'assistant' }>;
+  const [pendingAssistant, setPendingAssistant] = useState<AssistantItem | null>(null);
+  const pendingAssistantRef = useRef<AssistantItem | null>(null);
+  useEffect(() => {
+    pendingAssistantRef.current = pendingAssistant;
+  }, [pendingAssistant]);
+
+  const sealPendingAssistant = useCallback(() => {
+    const pending = pendingAssistantRef.current;
+    if (!pending) return;
+    pendingAssistantRef.current = null;
+    setPendingAssistant(null);
+    setThoughtExpanded(false);
+    setStaticItems((prev) => [...prev, pending]);
+  }, []);
+
   const [streamTools, setStreamTools] = useState<ToolCallView[]>([]);
   const [streamSubagents, setStreamSubagents] = useState<SubagentStatus[]>([]);
   const [subagentDispatchCount, setSubagentDispatchCount] = useState(0);
@@ -244,22 +260,43 @@ export function App({
   }));
   const colsRef = useRef(termSize.cols);
   colsRef.current = termSize.cols;
+  const termSizeRef = useRef(termSize);
+  termSizeRef.current = termSize;
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const onResize = () => {
-      // Debounce — Windows fires many resize events; each redraw can stamp UI.
+      // Windows Terminal fires `resize` on focus/alt-tab even when size is
+      // unchanged. Hard-clear + Static remount on those events stamps a second
+      // copy of the UI under the old frame.
+      const next = {
+        cols: process.stdout.columns || 120,
+        rows: process.stdout.rows || 24,
+      };
+      const prev = termSizeRef.current;
+      if (next.cols === prev.cols && next.rows === prev.rows) return;
+
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        setTermSize({
+        const latest = {
           cols: process.stdout.columns || 120,
           rows: process.stdout.rows || 24,
-        });
-        // Hard clear + remount Static so Ink doesn't leave ghost copies (win32).
-        if (process.platform === 'win32' && process.stdout.isTTY) {
+        };
+        const before = termSizeRef.current;
+        if (latest.cols === before.cols && latest.rows === before.rows) return;
+
+        setTermSize(latest);
+
+        // Only wipe when width shrinks — Ink's incremental erase fails in the
+        // dead zone and leaves stamped copies (see ink#816 / #828).
+        if (
+          process.platform === 'win32' &&
+          process.stdout.isTTY &&
+          latest.cols < before.cols
+        ) {
           process.stdout.write('\x1b[2J\x1b[H');
           setStaticEpoch((e) => e + 1);
         }
-      }, 80);
+      }, 120);
     };
     process.stdout.on('resize', onResize);
     return () => {
@@ -419,6 +456,7 @@ export function App({
       let fullText = '';
       let cleanedText = '';
       let thinkingText = '';
+      let thinkingDurationMs: number | undefined;
       const tools: ToolCallView[] = [];
       const subagents: SubagentStatus[] = [];
 
@@ -460,9 +498,14 @@ export function App({
                 break;
               }
               case 'reasoning': {
-                // Grok-inspired thinking stream — show while working, not in transcript.
-                thinkingText += event.content;
-                setLiveThinking(thinkingText);
+                // Grok-inspired thinking stream — show while working.
+                if (event.content) {
+                  thinkingText += event.content;
+                  setLiveThinking(thinkingText);
+                }
+                if (typeof event.durationMs === 'number' && event.durationMs > 0) {
+                  thinkingDurationMs = event.durationMs;
+                }
                 break;
               }
               case 'tool_start': {
@@ -579,30 +622,33 @@ export function App({
         return;
       }
 
-      if (fullText.trim() || tools.length > 0 || subagents.length > 0) {
-        setStaticItems((prev) => [
-          ...prev,
-          {
-            type: 'assistant',
-            id: nextId(),
-            text: fullText,
-            tools: [...tools],
-            subagents: subagents.length > 0 ? [...subagents] : undefined,
-          },
-        ]);
-      }
-      if (thinkingText.trim()) {
+      if (fullText.trim() || tools.length > 0 || subagents.length > 0 || thinkingText.trim()) {
         const tid = nextId();
-        const entry = { id: tid, text: thinkingText.trim() };
-        // Freeze into Static (no redraw ghosts). Latest kept for Ctrl+E expand.
-        setStaticItems((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.type === 'thought' && last.text === entry.text) return prev;
-          return [...prev, { type: 'thought' as const, id: tid, text: entry.text }];
-        });
-        latestThoughtRef.current = entry;
-        setLatestThought(entry);
-        setThoughtExpanded(false);
+        const thought = thinkingText.trim() || undefined;
+        const entry = thought
+          ? { id: tid, text: thought, durationMs: thinkingDurationMs }
+          : null;
+        // Seal previous sticky turn into Static before attaching a new one.
+        sealPendingAssistant();
+        const item: AssistantItem = {
+          type: 'assistant',
+          id: tid,
+          text: fullText,
+          tools: [...tools],
+          subagents: subagents.length > 0 ? [...subagents] : undefined,
+          thought,
+          thoughtDurationMs: thinkingDurationMs,
+        };
+        pendingAssistantRef.current = item;
+        setPendingAssistant(item);
+        if (entry) {
+          latestThoughtRef.current = entry;
+          setLatestThought(entry);
+          setThoughtExpanded(false);
+        } else {
+          latestThoughtRef.current = null;
+          setLatestThought(null);
+        }
       }
       if (fullText.trim()) {
         setChatHistory((prev) => {
@@ -613,7 +659,7 @@ export function App({
       }
       clearLive();
     },
-    [requestPermission, sessionId],
+    [requestPermission, sessionId, sealPendingAssistant],
   );
 
   /** Isolated Bugbot review — does not touch chatHistory / session. */
@@ -635,6 +681,7 @@ export function App({
 
       let fullText = '';
       let thinkingText = '';
+      let thinkingDurationMs: number | undefined;
       const tools: ToolCallView[] = [];
 
       const clearLive = () => {
@@ -671,8 +718,13 @@ export function App({
                 setLiveText(fullText);
                 break;
               case 'reasoning':
-                thinkingText += event.content;
-                setLiveThinking(thinkingText);
+                if (event.content) {
+                  thinkingText += event.content;
+                  setLiveThinking(thinkingText);
+                }
+                if (typeof event.durationMs === 'number' && event.durationMs > 0) {
+                  thinkingDurationMs = event.durationMs;
+                }
                 break;
               case 'tool_start': {
                 const tc: ToolCallView = { tool: event.tool, args: event.args, done: false };
@@ -704,23 +756,26 @@ export function App({
         }
 
         const text = (fullText.trim() || report || '').trim();
-        if (text || tools.length > 0) {
+        if (text || tools.length > 0 || thinkingText.trim()) {
+          const tid = nextId();
+          const thought = thinkingText.trim() || undefined;
           setStaticItems((prev) => [
             ...prev,
-            { type: 'assistant', id: nextId(), text: text || report, tools: [...tools] },
+            {
+              type: 'assistant',
+              id: tid,
+              text: text || report,
+              tools: [...tools],
+              thought,
+              thoughtDurationMs: thinkingDurationMs,
+            },
           ]);
-        }
-        if (thinkingText.trim()) {
-          const tid = nextId();
-          const entry = { id: tid, text: thinkingText.trim() };
-          setStaticItems((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.type === 'thought' && last.text === entry.text) return prev;
-            return [...prev, { type: 'thought' as const, id: tid, text: entry.text }];
-          });
-          latestThoughtRef.current = entry;
-          setLatestThought(entry);
-          setThoughtExpanded(false);
+          if (thought) {
+            const entry = { id: tid, text: thought, durationMs: thinkingDurationMs };
+            latestThoughtRef.current = entry;
+            setLatestThought(entry);
+            setThoughtExpanded(false);
+          }
         }
       } catch (e: unknown) {
         if (!abort.aborted) {
@@ -826,6 +881,8 @@ export function App({
           chatHistoryRef.current = [];
           setChatHistory([]);
           setSessionId(undefined);
+          pendingAssistantRef.current = null;
+          setPendingAssistant(null);
           setStaticItems([]);
           latestThoughtRef.current = null;
           setLatestThought(null);
@@ -1199,10 +1256,15 @@ export function App({
       }
 
       setStaticItems((prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.type === 'user' && last.text === trimmed) return prev;
-        return [...prev, { type: 'user', id: nextId(), text: trimmed }];
+        const pending = pendingAssistantRef.current;
+        pendingAssistantRef.current = null;
+        const base = pending ? [...prev, pending] : prev;
+        const last = base[base.length - 1];
+        if (last?.type === 'user' && last.text === trimmed) return base;
+        return [...base, { type: 'user', id: nextId(), text: trimmed }];
       });
+      setPendingAssistant(null);
+      setThoughtExpanded(false);
       const newHistory = [...chatHistory, { role: 'user' as const, content: trimmed }];
       chatHistoryRef.current = newHistory;
       setChatHistory(newHistory);
@@ -1333,8 +1395,9 @@ export function App({
       return;
     }
 
-    // Ctrl+E → expand/collapse most recent thought (full text in mutable panel)
-    if (key.ctrl && inputChar === 'e') {
+    // Ctrl+E / Alt+E → expand/collapse most recent thought.
+    // Windows often delivers Ctrl+E as \x05 instead of 'e'.
+    if ((key.ctrl || key.meta) && (inputChar === 'e' || inputChar === '\x05')) {
       if (!latestThoughtRef.current) return;
       setThoughtExpanded((v) => !v);
       return;
@@ -1501,15 +1564,30 @@ export function App({
         )}
       </Static>
 
-      {thoughtExpanded && latestThought ? (
-        <ExpandableThought entry={latestThought} expanded />
-      ) : latestThought ? (
-        <Box paddingLeft={2} marginBottom={0}>
-          <Text dimColor>ctrl+e expand last thought</Text>
+      {/* Latest turn stays mutable: thought above reply, Ctrl+E expands in place. */}
+      {pendingAssistant?.thought ? (
+        <ExpandableThought
+          entry={{
+            id: pendingAssistant.id,
+            text: pendingAssistant.thought,
+            durationMs: pendingAssistant.thoughtDurationMs,
+          }}
+          expanded={thoughtExpanded}
+        />
+      ) : null}
+      {pendingAssistant ? (
+        <Box width={cols}>
+          <MessageItem
+            item={{
+              ...pendingAssistant,
+              thought: undefined,
+              thoughtDurationMs: undefined,
+            }}
+          />
         </Box>
       ) : null}
 
-      {showBanner && !isLoading && <Banner />}
+      {showBanner && !isLoading && !pendingAssistant && <Banner />}
 
       {isLoading && (
         <LiveArea
@@ -1561,8 +1639,9 @@ export function App({
         queueSize={queueEntries.length}
         sessionId={sessionId}
       />
-      {/* Leave one blank row so Ink rarely hits exact fullscreen height on Windows
-          (that path leaves stale frame copies on every spinner tick). */}
+      {/* Keep ≥2 blank rows so Windows fullscreen frames never hit exact
+          terminal height — that path scrolls one row per repaint and stamps UI. */}
+      <Text> </Text>
       <Text> </Text>
     </Box>
   );

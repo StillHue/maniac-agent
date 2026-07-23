@@ -18,6 +18,8 @@ export interface SubagentStatus {
 export interface ThoughtEntry {
   id: number;
   text: string;
+  /** Wall-clock thinking time from the provider, when reported. */
+  durationMs?: number;
 }
 
 export type StaticItem =
@@ -28,11 +30,15 @@ export type StaticItem =
       text: string;
       tools: ToolCallView[];
       subagents?: SubagentStatus[];
+      /** Chain-of-thought shown above the reply. */
+      thought?: string;
+      thoughtDurationMs?: number;
     }
   | {
       type: 'thought';
       id: number;
       text: string;
+      durationMs?: number;
     }
   | { type: 'system'; id: number; text: string; variant: 'info' | 'error' | 'success' | 'warn' };
 

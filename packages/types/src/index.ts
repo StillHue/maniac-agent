@@ -40,7 +40,8 @@ export interface ToolResult {
 
 export type StreamEvent =
   | { type: 'token'; content: string }
-  | { type: 'reasoning'; content: string }
+  /** Model chain-of-thought. `durationMs` only when the provider reports it. */
+  | { type: 'reasoning'; content: string; durationMs?: number }
   | { type: 'tool_start'; tool: string; args: string }
   | { type: 'tool_output'; tool: string; chunk: string }
   | { type: 'tool_result'; tool: string; success: boolean; output: string }

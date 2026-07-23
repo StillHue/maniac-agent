@@ -209,6 +209,7 @@ async function callOpenAICompat(
     throw new Error(`HTTP ${status}${err ? `: ${err.slice(0, 200)}` : ''}`);
   }
 
+  // Non-stream: surface reasoning + optional provider duration once.
   if (!isStream || !res.body) {
     const data = await res.json();
     const msg = data.choices?.[0]?.message || {};
@@ -218,6 +219,21 @@ async function callOpenAICompat(
     const toolCalls = messageToolCallsToNative(msg);
     const text =
       content || (toolCalls.length === 0 && hasExplicitToolProtocol(reasoning) ? reasoning : '');
+    if (reasoning && onEvent) {
+      const durationMs = (() => {
+        const candidates = [
+          msg.reasoning_duration_ms,
+          msg.thinking_time_ms,
+          data?.usage?.reasoning_time_ms,
+          data?.usage?.thinking_time_ms,
+        ];
+        for (const v of candidates) {
+          if (typeof v === 'number' && Number.isFinite(v) && v > 0) return Math.round(v);
+        }
+        return undefined;
+      })();
+      onEvent({ type: 'reasoning', content: reasoning, durationMs });
+    }
     return { content: text, toolCalls };
   }
 
@@ -228,6 +244,28 @@ async function callOpenAICompat(
   let reasoningText = '';
   const pendingTools = new Map<number, { id: string; name: string; arguments: string }>();
   const { stripThinking } = require('./tools') as typeof import('./tools');
+
+  const pickDurationMs = (parsed: any): number | undefined => {
+    const c0 = parsed?.choices?.[0];
+    const candidates = [
+      c0?.delta?.reasoning_duration_ms,
+      c0?.delta?.thinking_time_ms,
+      c0?.delta?.reasoning_time,
+      c0?.message?.reasoning_duration_ms,
+      c0?.message?.thinking_time_ms,
+      parsed?.usage?.reasoning_time_ms,
+      parsed?.usage?.thinking_time_ms,
+      parsed?.usage?.completion_time_ms,
+    ];
+    for (const v of candidates) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) return Math.round(v);
+      if (typeof v === 'string' && /^\d+(\.\d+)?$/.test(v.trim())) {
+        const n = parseFloat(v);
+        if (n > 0) return Math.round(n);
+      }
+    }
+    return undefined;
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -242,6 +280,10 @@ async function callOpenAICompat(
       if (data === '[DONE]') continue;
       try {
         const parsed = JSON.parse(data);
+        const dur = pickDurationMs(parsed);
+        if (dur != null) {
+          if (onEvent) onEvent({ type: 'reasoning', content: '', durationMs: dur });
+        }
         const delta = parsed.choices?.[0]?.delta || {};
         const reason =
           (typeof delta.reasoning_content === 'string' && delta.reasoning_content) ||

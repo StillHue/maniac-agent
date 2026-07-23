@@ -245,9 +245,11 @@ export function loadCheckpoint(): CheckpointData | null {
 
 export function clearCheckpoint(): void {
   try {
-    if (fs.existsSync(CHECKPOINT_FILE)) fs.unlinkSync(CHECKPOINT_FILE);
-  } catch (e) {
-    console.debug('[Immortality] Erro ao limpar checkpoint:', e);
+    fs.unlinkSync(CHECKPOINT_FILE);
+  } catch (e: any) {
+    if (e?.code !== 'ENOENT') {
+      console.debug('[Immortality] clearCheckpoint:', e?.code || e?.message || e);
+    }
   }
 }
 
@@ -405,10 +407,26 @@ function atomicWrite(filePath: string, content: string): void {
   fs.writeFileSync(tmp, content, 'utf8');
   // Windows: renameSync to existing target silently fails or leaves tmp behind.
   // Remove target first, then rename (closest to atomic we get without fs.rename + EXDEV risks).
-  try { fs.unlinkSync(filePath); } catch (e) {
-    console.debug('[Immortality] atomicWrite unlink (esperado se arquivo não existe):', e);
+  try {
+    fs.unlinkSync(filePath);
+  } catch (e: any) {
+    // Missing target is normal on first write — never surface as a crash.
+    if (e?.code !== 'ENOENT') {
+      console.debug('[Immortality] atomicWrite unlink:', e?.code || e?.message || e);
+    }
   }
-  fs.renameSync(tmp, filePath);
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (e: any) {
+    // Last resort: copy+unlink tmp if rename fails (AV lock, etc.)
+    try {
+      fs.writeFileSync(filePath, content, 'utf8');
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    } catch (e2) {
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+      throw e2;
+    }
+  }
 }
 
 export function cleanImmortalityState(): void {
