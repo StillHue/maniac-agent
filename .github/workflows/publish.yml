@@ -51,10 +51,16 @@ jobs:
         run: npm install -g npm@latest
 
       # Publish from /tmp so yarn workspaces root (private:true) is not used.
+      # Skip cleanly when the version was already published (e.g. local pack-npm --publish).
       - name: Publish to npm
         run: |
           set -e
           PACK="$(pwd)/dist-npm"
+          VERSION="$(node -p "require('$PACK/package.json').version")"
+          if npm view "maniac-agent@$VERSION" version >/dev/null 2>&1; then
+            echo "maniac-agent@$VERSION already on npm — skipping publish"
+            exit 0
+          fi
           STAGE="/tmp/maniac-agent-npm"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
