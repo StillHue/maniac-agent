@@ -53,8 +53,17 @@ import { Footer } from './components/Footer.js';
 import { QueuePanel } from './components/QueuePanel.js';
 import { ModelWizard } from './components/ModelWizard.js';
 import { PermissionOverlay } from './components/PermissionOverlay.js';
+import { UpdateOverlay, type UpdatePhase } from './components/UpdateOverlay.js';
 import { SlashMenu } from './components/SlashMenu.js';
 import { HELP_TEXT, matchSlashCommands } from './commands.js';
+import {
+  checkForUpdate,
+  detectInstaller,
+  runUpdate,
+  skipUpdate,
+  type Installer,
+  type UpdateInfo,
+} from './update-check.js';
 import type {
   StaticItem,
   ToolCallView,
@@ -208,6 +217,10 @@ export function App({
 
   const [permPrompt, setPermPrompt] = useState<PermissionPromptState | null>(null);
   const permResolveRef = useRef<((d: PermissionPromptDecision) => void) | null>(null);
+  const permPromptRef = useRef<PermissionPromptState | null>(null);
+  useEffect(() => {
+    permPromptRef.current = permPrompt;
+  }, [permPrompt]);
 
   const [spinnerFrame, setSpinnerFrame] = useState(SPINNER_FRAMES[0]);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -270,6 +283,55 @@ export function App({
   })[0];
   const [showModelWizard, setShowModelWizard] = useState<boolean>(isFirstBoot);
 
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('ask');
+  const [updateInstaller, setUpdateInstaller] = useState<Installer>(() => detectInstaller());
+  const [updateError, setUpdateError] = useState<string | undefined>();
+  const updateBusyRef = useRef(false);
+  const pendingUpdateRef = useRef<UpdateInfo | null>(null);
+
+  const dismissUpdate = useCallback((rememberSkip: boolean) => {
+    if (rememberSkip && updateInfo) skipUpdate(updateInfo.latest);
+    setUpdateInfo(null);
+    setUpdatePhase('ask');
+    setUpdateError(undefined);
+  }, [updateInfo]);
+
+  const presentUpdateIfIdle = useCallback((info: UpdateInfo) => {
+    // Never interrupt an active run or permission prompt (Sentinel HIGH).
+    if (runningRef.current || permPromptRef.current) {
+      pendingUpdateRef.current = info;
+      return;
+    }
+    pendingUpdateRef.current = null;
+    setUpdateInstaller(detectInstaller());
+    setUpdatePhase('ask');
+    setUpdateError(undefined);
+    setUpdateInfo(info);
+  }, []);
+
+  const startUpdateCheck = useCallback((force = false) => {
+    void checkForUpdate({ force }).then((info) => {
+      if (!info) {
+        if (force) {
+          setStaticItems((prev) => [
+            ...prev,
+            { type: 'system', id: nextId(), text: '✓ maniac is up to date', variant: 'success' },
+          ]);
+        }
+        return;
+      }
+      presentUpdateIfIdle(info);
+    });
+  }, [presentUpdateIfIdle]);
+
+  useEffect(() => {
+    if (process.env.MANIAC_SKIP_UPDATE === '1') return;
+    // Wait until first-boot wizard is out of the way.
+    if (showModelWizard) return;
+    startUpdateCheck(false);
+  }, [showModelWizard, startUpdateCheck]);
+
   useEffect(() => {
     if (isFirstBoot) return;
     if (!hasUsableProvider()) {
@@ -297,6 +359,15 @@ export function App({
   // Synchronous run lock — React's isLoading state lags one commit behind,
   // so submit + drain must gate on this ref to avoid concurrent doRun calls.
   const runningRef = useRef(false);
+
+  // Show deferred update prompt only when idle (no run / permission ask).
+  useEffect(() => {
+    if (!pendingUpdateRef.current) return;
+    if (isLoading || permPrompt || showModelWizard || runningRef.current || updateInfo) return;
+    const info = pendingUpdateRef.current;
+    pendingUpdateRef.current = null;
+    presentUpdateIfIdle(info);
+  }, [isLoading, permPrompt, showModelWizard, updateInfo, presentUpdateIfIdle]);
 
   const abortCurrentRun = useCallback((announce = true) => {
     abortRef.current.aborted = true;
@@ -846,6 +917,22 @@ export function App({
           setShowModelWizard(true);
           break;
 
+        case 'update':
+          if (runningRef.current || isLoading || permPromptRef.current) {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: 'finish the current run / permission prompt before /update',
+                variant: 'warn',
+              },
+            ]);
+            break;
+          }
+          startUpdateCheck(true);
+          break;
+
         case 'resume': {
           const cwd = process.cwd();
           if (!arg) {
@@ -1055,7 +1142,7 @@ export function App({
           ]);
       }
     },
-    [chatHistory, exit, attachClipboardImage, syncQueue, abortCurrentRun, doSentinel],
+    [chatHistory, exit, attachClipboardImage, syncQueue, abortCurrentRun, doSentinel, startUpdateCheck],
   );
 
   const handleSubmit = useCallback(
@@ -1152,6 +1239,50 @@ export function App({
         permResolveRef.current?.(decision);
         permResolveRef.current = null;
         setPermPrompt(null);
+        return;
+      }
+      return;
+    }
+
+    if (updateInfo) {
+      if (updatePhase === 'installing') return;
+      if (updatePhase === 'done') return;
+      if (updatePhase === 'error') {
+        dismissUpdate(false);
+        return;
+      }
+      // ask
+      if (key.escape) {
+        dismissUpdate(false);
+        return;
+      }
+      if (inputChar.toLowerCase() === 'n') {
+        dismissUpdate(true);
+        return;
+      }
+      if (inputChar.toLowerCase() === 'b') {
+        setUpdateInstaller((prev) => (prev === 'npm' ? 'bun' : 'npm'));
+        return;
+      }
+      if (inputChar.toLowerCase() === 'y' || key.return) {
+        if (updateBusyRef.current || runningRef.current) return;
+        updateBusyRef.current = true;
+        setUpdatePhase('installing');
+        const installer = updateInstaller;
+        const target = updateInfo.latest;
+        void runUpdate(installer, target).then((result) => {
+          updateBusyRef.current = false;
+          if (result.ok) {
+            setUpdatePhase('done');
+            setTimeout(() => {
+              exit();
+              setTimeout(() => process.exit(0), 80);
+            }, 1200);
+          } else {
+            setUpdateError(result.output || 'unknown error');
+            setUpdatePhase('error');
+          }
+        });
         return;
       }
       return;
@@ -1336,6 +1467,20 @@ export function App({
             ]);
           }}
           onCancel={() => setShowModelWizard(false)}
+        />
+      </Box>
+    );
+  }
+
+  if (updateInfo && !permPrompt) {
+    return (
+      <Box flexDirection="column">
+        <UpdateOverlay
+          current={updateInfo.current}
+          latest={updateInfo.latest}
+          installer={updateInstaller}
+          phase={updatePhase}
+          error={updateError}
         />
       </Box>
     );

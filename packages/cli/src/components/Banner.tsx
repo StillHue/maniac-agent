@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { loadManiacConfig, PROVIDER_DEFS } from '@maniac/engine';
 import { ACCENT, ACCENT_BRIGHT } from '../theme.js';
+import { getLocalVersion } from '../update-check.js';
 
 type Style = 'dim' | 'chip' | 'bolt' | 'spark';
 
@@ -169,6 +170,7 @@ export function Banner() {
   // re-rolling the greeting each render made it flicker through phrases.
   const [greeting] = useState(() => GREETINGS[Math.floor(Math.random() * GREETINGS.length)]);
   const [info] = useState(resolveSessionInfo);
+  const [version] = useState(() => getLocalVersion());
   const tagline = "the 'what the hell, let's try it' agent";
   const tagWidth = showScene ? SCENE_WIDTH : panelWidth;
   const tagPad = basePad + Math.max(0, Math.floor((tagWidth - tagline.length - 4) / 2));
@@ -186,7 +188,7 @@ export function Banner() {
           <Text color={ACCENT} bold>
             maniac
           </Text>
-          <Text dimColor> v0.1.0</Text>
+          <Text dimColor> v{version}</Text>
         </Text>
       </Box>
       <Box paddingLeft={panelPad}>

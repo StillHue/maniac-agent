@@ -28,6 +28,7 @@ Usage:
   maniac --resume [id]       resume session (TUI)
   maniac --continue          resume latest session for cwd
   maniac --no-auto-resume    skip crash auto-resume on startup
+  maniac --no-update-check   skip npm update prompt on startup
 
 Interactive:
   Shift+Tab   cycle mode (chat/ask/plan)
@@ -62,6 +63,10 @@ and the description is injected into the code model's prompt.
 }
 
 async function main() {
+  if (args.noUpdateCheck) {
+    process.env.MANIAC_SKIP_UPDATE = '1';
+  }
+
   if (args.telegram) {
     await runTelegramBot({ cwd: process.cwd() });
     process.exit(0);
@@ -86,6 +91,17 @@ async function main() {
     if (!args.prompt) {
       console.error('error: -p requires a prompt string');
       process.exit(1);
+    }
+    // Non-blocking hint — never interrupt NDJSON streams with a prompt.
+    if (!args.noUpdateCheck) {
+      void import('./update-check.js').then(async ({ checkForUpdate }) => {
+        const info = await checkForUpdate();
+        if (info) {
+          console.error(
+            `[maniac] update available ${info.current} → ${info.latest} — run: npm i -g maniac-agent@${info.latest}`,
+          );
+        }
+      });
     }
     let sessionId: string | undefined;
     let history = undefined;

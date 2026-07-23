@@ -12,6 +12,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'default | acceptEdits | plan | dontAsk | bypassPermissions',
   },
   { name: 'model', description: 'configure provider and model' },
+  { name: 'update', description: 'check npm for a newer maniac-agent and install' },
   { name: 'clear', description: 'clear conversation / new session' },
   { name: 'new', description: 'alias for /clear' },
   { name: 'compact', description: 'compress the context window' },

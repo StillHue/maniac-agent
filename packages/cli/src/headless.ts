@@ -117,6 +117,7 @@ export function parseCliArgs(argv: string[]): {
   images: string[];
   telegram: boolean;
   noAutoResume: boolean;
+  noUpdateCheck: boolean;
   outputFormat: 'ndjson' | 'text';
 } {
   const args = argv.slice(2);
@@ -128,6 +129,7 @@ export function parseCliArgs(argv: string[]): {
   let help = false;
   let telegram = false;
   let noAutoResume = false;
+  let noUpdateCheck = false;
   let outputFormat: 'ndjson' | 'text' = 'ndjson';
   const images: string[] = [];
 
@@ -154,6 +156,8 @@ export function parseCliArgs(argv: string[]): {
       telegram = true;
     } else if (a === '--no-auto-resume') {
       noAutoResume = true;
+    } else if (a === '--no-update-check') {
+      noUpdateCheck = true;
     } else if (a === '-h' || a === '--help') {
       help = true;
     } else if (!a.startsWith('-') && !prompt) {
@@ -161,5 +165,17 @@ export function parseCliArgs(argv: string[]): {
     }
   }
 
-  return { headless, prompt, yolo, resume, continueLatest, help, images, telegram, noAutoResume, outputFormat };
+  return {
+    headless,
+    prompt,
+    yolo,
+    resume,
+    continueLatest,
+    help,
+    images,
+    telegram,
+    noAutoResume,
+    noUpdateCheck,
+    outputFormat,
+  };
 }
