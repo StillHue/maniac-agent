@@ -1,6 +1,6 @@
 import { ChatMessage, StreamEvent } from '@maniac/types';
 import * as path from 'path';
-import { loadManiacConfig, PROVIDER_DEFS, AUTO_SLOTS, AutoRouterSlot } from './config';
+import { loadManiacConfig, PROVIDER_DEFS, getRegisteredAutoSlots, AutoRouterSlot } from './config';
 import {
   buildOpenAITools,
   finalizeNativeToolCalls,
@@ -10,8 +10,71 @@ import {
 
 export type { CompletionResult, NativeToolCall } from './openai-tools';
 
-try { require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') }); }
-catch { /* dotenv optional */ }
+try {
+  const fs = require('fs') as typeof import('fs');
+  const os = require('os') as typeof import('os');
+  const dotenv = require('dotenv') as { config: (opts: { path: string }) => void };
+  // Prefer ~/.maniac/.env so a project cwd .env cannot shadow maniac secrets.
+  const candidates = [
+    path.join(os.homedir(), '.maniac', '.env'),
+    path.join(process.cwd(), '.env'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      dotenv.config({ path: p });
+      break;
+    }
+  }
+} catch { /* dotenv optional */ }
+
+/** Hard ceiling for a single LLM HTTP call (stream included). Slow free models need room. */
+const LLM_FETCH_TIMEOUT_MS = 300_000;
+const LLM_FETCH_RETRIES = 2;
+
+function isTransientLlmError(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '');
+  const name = String((err as any)?.name || '');
+  return (
+    name === 'TimeoutError' ||
+    name === 'AbortError' ||
+    /timeout|aborted|TimeoutError|ECONNRESET|ETIMEDOUT|fetch failed|HTTP 429|HTTP 5\d\d/i.test(msg)
+  );
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchLlm(
+  input: string | URL,
+  init: RequestInit,
+  label: string,
+): Promise<Response> {
+  let last: unknown;
+  for (let attempt = 0; attempt <= LLM_FETCH_RETRIES; attempt++) {
+    try {
+      const res = await fetch(input, {
+        ...init,
+        signal: init.signal || AbortSignal.timeout(LLM_FETCH_TIMEOUT_MS),
+      });
+      // Retry rate-limit / gateway blips before throwing
+      if ((res.status === 429 || res.status >= 500) && attempt < LLM_FETCH_RETRIES) {
+        const wait = 1000 * (attempt + 1);
+        console.debug(`[opencode] ${label} HTTP ${res.status}; retry in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      last = e;
+      if (!isTransientLlmError(e) || attempt >= LLM_FETCH_RETRIES) throw e;
+      const wait = 1000 * (attempt + 1);
+      console.debug(`[opencode] ${label} transient error; retry in ${wait}ms:`, (e as Error)?.message || e);
+      await sleep(wait);
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last));
+}
 
 // ─── Legacy env-var defaults (fallback when config.json absent) ────────────
 
@@ -129,12 +192,11 @@ async function callOpenAICompat(
     body.tool_choice = 'auto';
   }
 
-  const res = await fetch(url, {
+  const res = await fetchLlm(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120000),
-  });
+  }, `openai/${model}`);
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
@@ -232,9 +294,10 @@ async function callGemini(
   const body: any = { contents, generationConfig: { temperature, maxOutputTokens: maxTokens } };
   if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg.content }] };
 
-  const res = await fetch(
+  const res = await fetchLlm(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(120000) },
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    `gemini/${model}`,
   );
 
   if (!res.ok) throw new Error(`Gemini HTTP ${res.status}: ${await res.text().catch(() => '')}`);
@@ -257,12 +320,11 @@ async function callAnthropic(
   const body: any = { model, messages: filtered, max_tokens: maxTokens, temperature };
   if (systemMsg) body.system = systemMsg;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetchLlm('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120000),
-  });
+  }, `anthropic/${model}`);
 
   if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}: ${await res.text().catch(() => '')}`);
   const data = await res.json();
@@ -293,7 +355,8 @@ async function callHermes(messages: ChatMessage[], onEvent?: (e: StreamEvent) =>
 // Refreshes env-var keys at call time (dotenv already loaded at module init).
 
 function resolveSlots(overrides?: AutoRouterSlot[]): AutoRouterSlot[] {
-  const slots = (overrides && overrides.length > 0 ? overrides : AUTO_SLOTS)
+  // Auto only routes models the user registered — never baked-in free lists.
+  const slots = getRegisteredAutoSlots(overrides)
     .slice()
     .sort((a, b) => b.priority - a.priority);
 
@@ -311,6 +374,8 @@ function resolveSlots(overrides?: AutoRouterSlot[]): AutoRouterSlot[] {
       || (s.provider === 'mistral'    ? process.env.MISTRAL_API_KEY      : '')
       || (s.provider === 'together'   ? process.env.TOGETHER_API_KEY     : '')
       || (s.provider === 'cohere'     ? process.env.COHERE_API_KEY       : '')
+      || (s.provider === 'openai'     ? process.env.OPENAI_API_KEY       : '')
+      || (s.provider === 'anthropic'  ? process.env.ANTHROPIC_API_KEY    : '')
       || '',
   }));
 }
@@ -324,6 +389,11 @@ async function callAutoRouter(
   tools?: OpenAIFunctionTool[],
 ): Promise<CompletionResult> {
   const slots = resolveSlots(slotOverrides);
+  if (slots.length === 0) {
+    throw new Error(
+      'Auto-router: nenhum provider cadastrado. Use /model, escolha um provider + modelo, e só então ative Auto.',
+    );
+  }
   const errors: string[] = [];
 
   for (const slot of slots) {

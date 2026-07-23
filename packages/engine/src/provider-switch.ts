@@ -1,8 +1,8 @@
 import {
-  AUTO_SLOTS,
   loadManiacConfig,
   saveManiacConfig,
   PROVIDER_DEFS,
+  upsertRegisteredSlot,
   type ManiacConfig,
 } from './config';
 
@@ -33,7 +33,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   xai: 'grok-2-latest',
   together: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
   nvidia: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  opencode: 'grok-build-0.1',
+  opencode: 'big-pickle',
   kilo: 'kilo-auto/free',
   cohere: 'command-r-plus',
   ollama: 'llama3.2',
@@ -176,6 +176,24 @@ export function applyProviderSwitch(provider: string, model?: string): ApplyProv
           existing?.provider === provider ? existing?.baseUrl : undefined,
         );
 
+  let autoSlots = existing?.autoSlots || [];
+  if (provider === 'auto') {
+    if (!autoSlots.length) {
+      return {
+        success: false,
+        output:
+          'Auto precisa de providers cadastrados. Use /model, escolha provider+modelo, depois ative Auto.',
+      };
+    }
+  } else if (provider !== 'ollama' && provider !== 'hermes') {
+    autoSlots = upsertRegisteredSlot(autoSlots, {
+      provider,
+      model: resolvedModel,
+      apiKey,
+      baseUrl: baseUrl || undefined,
+    });
+  }
+
   const cfg: ManiacConfig = {
     provider,
     model: resolvedModel,
@@ -183,7 +201,7 @@ export function applyProviderSwitch(provider: string, model?: string): ApplyProv
     baseUrl: baseUrl || undefined,
     temperature: existing?.temperature ?? 0.3,
     maxTokens: existing?.maxTokens ?? 4096,
-    autoSlots: provider === 'auto' ? existing?.autoSlots || AUTO_SLOTS : undefined,
+    autoSlots,
   };
 
   saveManiacConfig(cfg);
@@ -228,6 +246,6 @@ export function hydrateProviderCall(provider: string, model?: string): {
     baseUrl,
     temperature: cfg?.temperature ?? 0.3,
     maxTokens: cfg?.maxTokens ?? 4096,
-    autoSlots: provider === 'auto' ? cfg?.autoSlots || AUTO_SLOTS : undefined,
+    autoSlots: provider === 'auto' ? cfg?.autoSlots || [] : undefined,
   };
 }

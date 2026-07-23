@@ -3,7 +3,22 @@ import * as crypto from 'crypto';
 const ESC = '\x1b';
 import * as path from 'path';
 
-try { require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') }); } catch (e) {
+try {
+  const fs = require('fs') as typeof import('fs');
+  const os = require('os') as typeof import('os');
+  const dotenv = require('dotenv') as { config: (opts: { path: string }) => void };
+  // Prefer ~/.maniac/.env so a project cwd .env cannot shadow maniac secrets/bind.
+  const candidates = [
+    path.join(os.homedir(), '.maniac', '.env'),
+    path.join(process.cwd(), '.env'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      dotenv.config({ path: p });
+      break;
+    }
+  }
+} catch (e) {
   // dotenv is optional — it's fine if not installed
   console.debug('[server] dotenv not available:', e);
 }
@@ -55,7 +70,7 @@ setInterval(() => {
 const PORT = parseInt(process.env.MANIAC_PORT || process.env.ARES_PORT || '3130', 10);
 /** Default loopback only — set MANIAC_BIND=0.0.0.0 to expose on all interfaces. */
 const BIND_HOST = process.env.MANIAC_BIND || '127.0.0.1';
-const PID_FILE = path.join(__dirname, '..', '..', '..', '.maniac.pid');
+const PID_FILE = path.join(MANIAC_DIR, 'engine.pid');
 const API_TOKEN = process.env.MANIAC_API_TOKEN || '';
 /** Comma-separated allowed CORS origins. Default: localhost / 127.0.0.1 only. */
 const CORS_ALLOW = (process.env.MANIAC_CORS_ORIGIN || '')

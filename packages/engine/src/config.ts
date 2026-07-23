@@ -287,56 +287,55 @@ function decryptConfigKeys(cfg: ManiacConfig): ManiacConfig {
 }
 
 /**
- * Default auto-router slots — OpenCode Zen free models only.
- * Avoid openrouter/free / random free gateways: they can route to content-safety
- * classifiers that dump "User Safety: unsafe" instead of answering.
- * @see https://opencode.ai/docs/zen/
+ * User-registered provider+model slots for Auto routing.
+ * Auto never invents providers — it only failovers across what the user
+ * configured via /model (see upsertRegisteredSlot). Kept empty by default.
+ * @deprecated Do not put baked-in free models here.
  */
-export const AUTO_SLOTS: AutoRouterSlot[] = [
-  {
-    provider: 'opencode',
-    model: 'big-pickle',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 100,
-  },
-  {
-    provider: 'opencode',
-    model: 'north-mini-code-free',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 95,
-  },
-  {
-    provider: 'opencode',
-    model: 'deepseek-v4-flash-free',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 90,
-  },
-  {
-    provider: 'opencode',
-    model: 'mimo-v2.5-free',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 85,
-  },
-  {
-    provider: 'opencode',
-    model: 'laguna-s-2.1-free',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 80,
-  },
-  {
-    provider: 'opencode',
-    model: 'nemotron-3-ultra-free',
-    apiKey: process.env.OPENCODE_API_KEY || '',
-    baseUrl: 'https://opencode.ai/zen/v1',
-    priority: 75,
-  },
-];
+export const AUTO_SLOTS: AutoRouterSlot[] = [];
 
+/** Add or replace a provider's registered model in the Auto catalog. */
+export function upsertRegisteredSlot(
+  slots: AutoRouterSlot[] | undefined,
+  slot: {
+    provider: string;
+    model: string;
+    apiKey?: string;
+    baseUrl?: string;
+    priority?: number;
+  },
+): AutoRouterSlot[] {
+  if (!slot.provider || slot.provider === 'auto') return slots ? [...slots] : [];
+  const list = [...(slots || [])];
+  const next: AutoRouterSlot = {
+    provider: slot.provider,
+    model: slot.model,
+    apiKey: slot.apiKey || '',
+    baseUrl: slot.baseUrl,
+    priority: slot.priority ?? Math.max(10, 100 - list.length * 5),
+  };
+  const i = list.findIndex((s) => s.provider === slot.provider);
+  if (i >= 0) {
+    list[i] = {
+      ...list[i],
+      ...next,
+      // Keep higher priority if already registered
+      priority: Math.max(list[i].priority, next.priority),
+      apiKey: next.apiKey || list[i].apiKey,
+      baseUrl: next.baseUrl || list[i].baseUrl,
+    };
+  } else {
+    list.push(next);
+  }
+  return list;
+}
+
+/** Slots Auto will actually try — only user-registered ones. */
+export function getRegisteredAutoSlots(overrides?: AutoRouterSlot[]): AutoRouterSlot[] {
+  if (overrides && overrides.length > 0) return overrides.slice();
+  const cfg = loadManiacConfig();
+  return (cfg?.autoSlots || []).slice();
+}
 export function loadManiacConfig(): ManiacConfig | null {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
@@ -404,7 +403,7 @@ export function hasUsableProvider(): boolean {
   const cfg = loadManiacConfig();
   if (cfg?.provider === 'ollama' || cfg?.provider === 'custom') return true;
   if (cfg?.provider === 'auto') {
-    const slots = cfg.autoSlots && cfg.autoSlots.length > 0 ? cfg.autoSlots : AUTO_SLOTS;
+    const slots = getRegisteredAutoSlots(cfg.autoSlots);
     if (slots.some((s) => s.apiKey || process.env[PROVIDER_ENV_KEY[s.provider] || ''])) return true;
   }
   return false;

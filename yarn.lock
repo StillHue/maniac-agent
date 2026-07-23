@@ -49,7 +49,7 @@
   integrity sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==
 
 "@maniac/cli@file:C:\\Users\\gabdr\\maniac-agent\\packages\\cli":
-  version "0.2.2"
+  version "0.2.6"
   resolved "file:packages/cli"
   dependencies:
     "@maniac/engine" "*"
@@ -58,7 +58,7 @@
     react "^18.2.0"
 
 "@maniac/engine@*", "@maniac/engine@file:C:\\Users\\gabdr\\maniac-agent\\packages\\engine":
-  version "0.2.2"
+  version "0.2.6"
   resolved "file:packages/engine"
   dependencies:
     "@maniac/types" "*"
@@ -67,11 +67,11 @@
     zod "^4.4.3"
 
 "@maniac/prompts@*", "@maniac/prompts@file:C:\\Users\\gabdr\\maniac-agent\\packages\\prompts":
-  version "0.2.2"
+  version "0.2.6"
   resolved "file:packages/prompts"
 
 "@maniac/types@*", "@maniac/types@file:C:\\Users\\gabdr\\maniac-agent\\packages\\types":
-  version "0.2.2"
+  version "0.2.6"
   resolved "file:packages/types"
 
 "@mediapipe/tasks-vision@0.10.17":

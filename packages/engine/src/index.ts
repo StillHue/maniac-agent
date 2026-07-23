@@ -9,7 +9,7 @@ export {
   nativeArgsToCommand,
   resolveToolCallsFromCompletion,
 } from './openai-tools';
-export { loadManiacConfig, saveManiacConfig, fetchModels, PROVIDER_DEFS, AUTO_SLOTS, getConfiguredProviders, hasUsableProvider } from './config';
+export { loadManiacConfig, saveManiacConfig, fetchModels, PROVIDER_DEFS, AUTO_SLOTS, getConfiguredProviders, hasUsableProvider, upsertRegisteredSlot, getRegisteredAutoSlots } from './config';
 export type { ManiacConfig, ProviderDef, AutoRouterSlot } from './config';
 export { registerHook, unregisterHook, listHooks } from './hooks';
 export type { HookPhase, HookContext, HookFn } from './hooks';

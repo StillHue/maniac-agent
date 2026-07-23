@@ -1,13 +1,13 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import {
-  AUTO_SLOTS,
   PROVIDER_DEFS,
   PROVIDER_ENV_KEY,
   fetchModels,
   loadManiacConfig,
   saveManiacConfig,
   setActiveProvider,
+  upsertRegisteredSlot,
   type ManiacConfig,
   type ProviderDef,
 } from '@maniac/engine';
@@ -22,7 +22,7 @@ interface ModelWizardProps {
 
 const AUTO_ENTRY = {
   id: 'auto',
-  name: 'Auto (OpenCode Zen free — uses OPENCODE_API_KEY)',
+  name: 'Auto (roteia só os providers que você cadastrou)',
   requiresKey: false,
   baseUrl: '',
   modelsEndpoint: '',
@@ -114,16 +114,22 @@ export function ModelWizard({ onDone, onCancel, isFirstBoot }: ModelWizardProps)
 
   function goToModelsFor(def: (typeof WIZARD_PROVIDERS)[number], typedKey = '', typedUrl = '') {
     if (def.id === 'auto') {
+      const slots = existing?.autoSlots || [];
+      if (!slots.length) {
+        setError('Cadastre um provider+modelo antes de usar Auto (escolha qualquer provider na lista).');
+        setStep(hasExisting ? 'menu' : 'provider');
+        return;
+      }
       saveManiacConfig({
         provider: 'auto',
         model: 'auto',
         apiKey: '',
         temperature: existing?.temperature ?? 0.3,
         maxTokens: existing?.maxTokens ?? 4096,
-        autoSlots: existing?.autoSlots?.length ? existing.autoSlots : AUTO_SLOTS,
+        autoSlots: slots,
       });
       setActiveProvider({ provider: 'auto', model: 'auto' });
-      onDone('provider: Auto  model: auto');
+      onDone(`provider: Auto  (${slots.length} cadastrado${slots.length === 1 ? '' : 's'})`);
       return;
     }
     const url = urlFor(def.id, def, typedUrl);
@@ -299,6 +305,13 @@ export function ModelWizard({ onDone, onCancel, isFirstBoot }: ModelWizardProps)
         const chosenModel = models[modelIdx];
         const key = keyFor(selectedDef.id, apiKey);
         const url = urlFor(selectedDef.id, selectedDef, baseUrl);
+        // Register this provider+model for Auto failover; stay on the chosen model now.
+        const autoSlots = upsertRegisteredSlot(existing?.autoSlots, {
+          provider: selectedDef.id,
+          model: chosenModel,
+          apiKey: key,
+          baseUrl: url || undefined,
+        });
         const cfg: ManiacConfig = {
           provider: selectedDef.id,
           model: chosenModel,
@@ -306,7 +319,7 @@ export function ModelWizard({ onDone, onCancel, isFirstBoot }: ModelWizardProps)
           baseUrl: url || undefined,
           temperature: existing?.temperature ?? 0.3,
           maxTokens: existing?.maxTokens ?? 4096,
-          autoSlots: selectedDef.id === 'auto' ? existing?.autoSlots || AUTO_SLOTS : undefined,
+          autoSlots,
         };
         saveManiacConfig(cfg);
         setActiveProvider({ provider: cfg.provider, model: cfg.model });

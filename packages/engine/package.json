@@ -1,6 +1,6 @@
 {
   "name": "@maniac/engine",
-  "version": "0.2.2",
+  "version": "0.2.6",
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

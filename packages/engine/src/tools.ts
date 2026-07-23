@@ -6,7 +6,7 @@ import { loadCustomTools, saveCustomTools } from './tools-persistence';
 import {
   immortalitySummary, getImmortalityStatus, checkResume,
   saveCheckpoint, loadCheckpoint, clearCheckpoint,
-  cleanImmortalityState, reportCrash, heartbeat,
+  cleanImmortalityState, reportCrash, heartbeat, MANIAC_DIR,
 } from './immortality';
 import type { McpServerConfig } from './mcp';
 
@@ -914,6 +914,14 @@ export function toolServerStatus(): ToolOutput {
 }
 
 export function toolSelfRestart(args: string, cwd: string): ToolOutput {
+  if (process.env.MANIAC_ALLOW_SELF_RESTART !== '1') {
+    return {
+      success: false,
+      output:
+        'self_restart bloqueado (mata o processo no meio da task). ' +
+        'Defina MANIAC_ALLOW_SELF_RESTART=1 se realmente quiser reiniciar.',
+    };
+  }
   try {
     const reason = args.trim() || 'auto-restart apos modificacao';
     const pidPath = PID_FILE;
@@ -952,7 +960,8 @@ export function toolSelfRestart(args: string, cwd: string): ToolOutput {
   }
 }
 
-const PID_FILE = path.join(ENGINE_PKG, '..', '..', '.maniac.pid');
+/** Must match packages/engine/src/server.ts — live under ~/.maniac, not the repo. */
+const PID_FILE = path.join(MANIAC_DIR, 'engine.pid');
 
 // ─── Ferramentas de Imortalidade ──────────────────────────────────────────
 

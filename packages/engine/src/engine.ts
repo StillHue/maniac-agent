@@ -39,7 +39,7 @@ import {
 } from './session';
 import { describeImages, buildVisionAugmentedMessage, getVisionModelLabel } from './vision';
 
-let MAX_TOOL_ITERATIONS = 50;
+let MAX_TOOL_ITERATIONS = 100;
 const CWD = (() => {
   const engineSrc = __dirname;
   const candidates = [
@@ -614,13 +614,23 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
     toolIter++;
   }
 
+  const hitMaxIterations = toolIter >= MAX_TOOL_ITERATIONS;
+  if (hitMaxIterations) {
+    const msg =
+      `max tool iterations (${MAX_TOOL_ITERATIONS}) reached — task paused mid-run. ` +
+      `Send another message (or /continue) to keep going.`;
+    onEvent({ type: 'error', message: msg });
+    if (!finalReply) finalReply = msg;
+    flushCheckpoint();
+  }
+
   onEvent({ type: 'done' });
 
   touchLastActivity();
 
-  // Checkpoint limpo após execução bem-sucedida
-  clearCheckpoint();
-  heartbeat('idle');
+  // Keep checkpoint when we paused mid-run so /continue / resume can pick up.
+  if (!hitMaxIterations) clearCheckpoint();
+  heartbeat(hitMaxIterations ? 'busy' : 'idle');
   if (runLock) releaseRunLock(runLock.token);
 
   if (finalReply) {
