@@ -3,13 +3,13 @@ import * as path from 'path';
 
 /**
  * Vision routing: free code models (NVIDIA / OpenCode) can't read images,
- * so attached images are described by a Groq vision model first and the
+ * so attached images are described by a vision model first and the
  * resulting text is injected back into the code model's prompt.
  */
 
-const VISION_BASE_URL = process.env.MANIAC_VISION_BASE_URL || 'https://api.groq.com/openai/v1';
-const VISION_MODEL = process.env.MANIAC_VISION_MODEL || 'qwen/qwen3.6-27b';
-// Groq rejects base64 image payloads bigger than ~4MB
+const VISION_BASE_URL = process.env.MANIAC_VISION_BASE_URL || process.env.MISTRAL_BASE_URL || 'https://api.mistral.ai/v1';
+const VISION_MODEL = process.env.MANIAC_VISION_MODEL || process.env.VISION_MODEL || 'mistral-small-latest';
+// Mistral rejects base64 image payloads bigger than ~4MB
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 const IMAGE_MIME: Record<string, string> = {
@@ -28,14 +28,22 @@ export function isImagePath(p: string): boolean {
 }
 
 export function visionAvailable(): boolean {
-  return !!(process.env.MANIAC_VISION_API_KEY || process.env.GROQ_API_KEY);
+  return !!(
+    process.env.MANIAC_VISION_API_KEY ||
+    process.env.GROQ_API_KEY ||
+    process.env.MISTRAL_API_KEY
+  );
 }
 
 function resolveVisionKey(): string {
-  const key = process.env.MANIAC_VISION_API_KEY || process.env.GROQ_API_KEY || '';
+  const key =
+    process.env.MANIAC_VISION_API_KEY ||
+    process.env.MISTRAL_API_KEY ||
+    process.env.GROQ_API_KEY ||
+    '';
   if (!key) {
     throw new Error(
-      'Vision routing requires GROQ_API_KEY (or MANIAC_VISION_API_KEY) — set it in .env',
+      'Vision routing requires an API key — set MANIAC_VISION_API_KEY, MISTRAL_API_KEY, or GROQ_API_KEY in .env',
     );
   }
   return key;
@@ -54,7 +62,7 @@ export interface ImageDescription {
   description: string;
 }
 
-/** Sends one image to the Groq vision model and returns a detailed description. */
+/** Sends one image to the vision model and returns a detailed description. */
 export async function describeImage(imagePath: string, userText?: string): Promise<string> {
   const apiKey = resolveVisionKey();
 
@@ -81,8 +89,8 @@ export async function describeImage(imagePath: string, userText?: string): Promi
       model: VISION_MODEL,
       temperature: 0.2,
       max_tokens: 4096,
-      // Groq: hide chain-of-thought of reasoning models (e.g. Qwen) so the
-      // content field carries only the final description.
+      // Hide chain-of-thought of reasoning models so content carries only
+      // the final description.  Ignored by providers that don't support it.
       reasoning_format: 'hidden',
       messages: [
         { role: 'system', content: DESCRIBE_PROMPT },

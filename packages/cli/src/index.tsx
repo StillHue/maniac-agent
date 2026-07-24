@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { render } from 'ink';
-import { findLatestSession, loadSession, runTelegramBot, tryAutoResume } from '@maniac/engine';
+import { findLatestSession, loadSession, runTelegramBot, tryAutoResume, applyProviderSwitch } from '@maniac/engine';
 import { App } from './App.js';
 import { parseCliArgs, runHeadless } from './headless.js';
 
@@ -29,6 +29,8 @@ Usage:
   maniac --continue          resume latest session for cwd
   maniac --no-auto-resume    skip crash auto-resume on startup
   maniac --no-update-check   skip npm update prompt on startup
+  maniac --provider groq     set provider (applies before launch)
+  maniac --model llama-3.3-70b-versatile   set model
 
 Interactive:
   Shift+Tab   cycle mode (chat/ask/plan)
@@ -65,6 +67,15 @@ and the description is injected into the code model's prompt.
 async function main() {
   if (args.noUpdateCheck) {
     process.env.MANIAC_SKIP_UPDATE = '1';
+  }
+
+  // Apply --provider / --model flags before anything else
+  if (args.provider || args.model) {
+    const result = applyProviderSwitch(args.provider || 'auto', args.model);
+    if (!result.success) {
+      console.error(`[maniac] ${result.output}`);
+      process.exit(1);
+    }
   }
 
   if (args.telegram) {

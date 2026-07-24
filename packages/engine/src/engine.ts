@@ -39,7 +39,7 @@ import {
 } from './session';
 import { describeImages, buildVisionAugmentedMessage, getVisionModelLabel } from './vision';
 
-let MAX_TOOL_ITERATIONS = 100;
+let MAX_TOOL_ITERATIONS = 25;
 const CWD = (() => {
   const engineSrc = __dirname;
   const candidates = [
@@ -58,8 +58,34 @@ const CWD = (() => {
   return process.cwd();
 })();
 
+const EMPTY_REPLY_MAX_RETRIES = 2;
+const EMPTY_REPLY_NUDGE =
+  'Continue. Your previous turn had no visible reply (thinking-only). ' +
+  'Call tools or answer the user in plain text — do not only think.';
+const DEFERRED_INTENT_NUDGE =
+  'Continue from the tool results above. Do the next concrete step now ' +
+  '(call tools or give a final answer). Do not only say you will explore.';
+
+/** Short "I'll look into it" soft-quits after tools — free models do this a lot. */
+export function looksLikeDeferredIntent(text: string): boolean {
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (!t || t.length > 320) return false;
+  if (
+    /\b(vou|i('ll| will)|let me|going to)\s+(explorar|olhar|ver|checar|investigar|mostrar|explore|check|look|dig|investigate|show)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/\bmais a fundo\b|\bpanorama real\b/i.test(t)) return true;
+  if (/^(ok[,.]?\s*)?(vou|deix[ae]|j[aá] vou|let me|i('ll| will))\b/i.test(t) && t.length < 160) {
+    return true;
+  }
+  return false;
+}
+
 export function setMaxToolIterations(n: number): void {
-  MAX_TOOL_ITERATIONS = Math.max(5, Math.min(n, 500));
+  MAX_TOOL_ITERATIONS = Math.max(5, Math.min(n, 100));
 }
 
 export type PermissionPromptDecision = 'allow' | 'deny' | 'always';
@@ -298,6 +324,9 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
 
     finalReply = '';
     let toolIter = 0;
+    let emptyReplyRetries = 0;
+    let deferredIntentNudged = false;
+    let hadToolsThisRun = false;
     const allToolCalls: { type: string; success: boolean }[] = [];
 
   while (toolIter < MAX_TOOL_ITERATIONS) {
@@ -330,6 +359,42 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
 
     if (toolCalls.length === 0) {
       const visible = stripToolCalls(reply) || reply.trim();
+
+      // Free/reasoning models often stream CoT then emit zero visible tokens.
+      if (!visible && emptyReplyRetries < EMPTY_REPLY_MAX_RETRIES && !signal?.aborted) {
+        emptyReplyRetries++;
+        onEvent({
+          type: 'compact',
+          summary: `empty reply (thinking-only) — retry ${emptyReplyRetries}/${EMPTY_REPLY_MAX_RETRIES}`,
+        });
+        messages.push({
+          role: 'assistant',
+          content: reply.trim() || '(thinking only, no visible text)',
+        });
+        messages.push({ role: 'user', content: EMPTY_REPLY_NUDGE });
+        toolIter++;
+        continue;
+      }
+
+      // After tools: "vou explorar mais…" then idle — nudge once to actually continue.
+      if (
+        visible &&
+        hadToolsThisRun &&
+        !deferredIntentNudged &&
+        looksLikeDeferredIntent(visible) &&
+        !signal?.aborted
+      ) {
+        deferredIntentNudged = true;
+        onEvent({
+          type: 'compact',
+          summary: 'soft-quit after tools — nudging model to continue',
+        });
+        messages.push({ role: 'assistant', content: reply });
+        messages.push({ role: 'user', content: DEFERRED_INTENT_NUDGE });
+        toolIter++;
+        continue;
+      }
+
       finalReply = visible;
       if (!visible) {
         onEvent({
@@ -340,6 +405,8 @@ async function runEngine(options: EngineRunOptions): Promise<string> {
       break;
     }
 
+    hadToolsThisRun = true;
+    emptyReplyRetries = 0;
     const cleanReply = stripToolCalls(reply);
     // Do NOT emit cleanReply as `reasoning` — that dumped the assistant text
     // (and any leaked CoT) into the UI / headless "thought" channel.

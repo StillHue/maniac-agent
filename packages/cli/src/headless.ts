@@ -119,6 +119,8 @@ export function parseCliArgs(argv: string[]): {
   noAutoResume: boolean;
   noUpdateCheck: boolean;
   outputFormat: 'ndjson' | 'text';
+  provider?: string;
+  model?: string;
 } {
   const args = argv.slice(2);
   let headless = false;
@@ -132,6 +134,8 @@ export function parseCliArgs(argv: string[]): {
   let noUpdateCheck = false;
   let outputFormat: 'ndjson' | 'text' = 'ndjson';
   const images: string[] = [];
+  let provider: string | undefined;
+  let model: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -152,6 +156,10 @@ export function parseCliArgs(argv: string[]): {
       if (fmt === 'text' || fmt === 'streaming-json' || fmt === 'ndjson') {
         outputFormat = fmt === 'text' ? 'text' : 'ndjson';
       }
+    } else if (a === '--provider') {
+      provider = args[++i];
+    } else if (a === '--model') {
+      model = args[++i];
     } else if (a === 'telegram' || a === '--telegram') {
       telegram = true;
     } else if (a === '--no-auto-resume') {
@@ -177,5 +185,7 @@ export function parseCliArgs(argv: string[]): {
     noAutoResume,
     noUpdateCheck,
     outputFormat,
+    provider,
+    model,
   };
 }

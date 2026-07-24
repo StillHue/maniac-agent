@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Circle, MessageCircle, HelpCircle, ClipboardList, MessageSquareMore, ClipboardPaste, Image, Plus, Trash2 } from 'lucide-react';
+import { Circle, MessageCircle, HelpCircle, ClipboardList, MessageSquareMore, ClipboardPaste, Image, Plus, Trash2, Settings, ChevronDown, Check } from 'lucide-react';
 import OrbScene from '../components/OrbScene';
 import SpinningPlanet from '../components/SpinningPlanet';
 
@@ -95,6 +95,12 @@ const s = {
   input: { flex: 1, background: 'transparent', border: 'none', padding: '8px 0', color: W, fontSize: '0.85rem', outline: 'none', fontFamily: 'inherit' },
   empty: { padding: '40px 0', color: D, fontSize: '0.8rem', textAlign: 'center' as const },
   contentTypeTag: { fontSize: '0.65rem', color: D, fontStyle: 'italic' as const, marginLeft: '4px' },
+  modelBtn: { display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', color: W, fontSize: '0.68rem', cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left' as const, marginTop: 8 },
+  modelDropdown: { position: 'absolute' as const, bottom: '100%', left: 0, right: 0, background: '#111', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, padding: '6px 0', zIndex: 100, maxHeight: 260, overflowY: 'auto' as const, boxShadow: '0 -8px 24px rgba(0,0,0,0.6)' },
+  modelItem: (active: boolean, hover: boolean) => ({
+    padding: '6px 10px', fontSize: '0.68rem', cursor: 'pointer', fontFamily: 'inherit', color: active ? R : W, background: hover ? 'rgba(255,255,255,0.06)' : 'transparent', border: 'none', width: '100%', textAlign: 'left' as const, display: 'flex', alignItems: 'center', gap: 6,
+  }),
+  modelProvider: { fontSize: '0.6rem', color: D, fontWeight: 'bold' as const, padding: '6px 10px 2px', textTransform: 'uppercase' as const, letterSpacing: '0.05em' },
 };
 
 function escapeHtml(text: string): string {
@@ -162,6 +168,55 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const tcRef = useRef<ToolCallDisp[]>([]);
   const seenProactive = useRef(new Set<string>());
+
+  // Model selector state
+  const [modelOpen, setModelOpen] = useState(false);
+  const [cfg, setCfg] = useState<{ provider: string; model: string } | null>(null);
+  const [providers, setProviders] = useState<{ id: string; name: string }[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [hoveredModel, setHoveredModel] = useState(-1);
+  const modelRef = useRef<HTMLDivElement>(null);
+
+  // Load config on mount
+  useEffect(() => {
+    fetch('/api/config').then(r => r.json()).then(d => {
+      setCfg(d.config ? { provider: d.config.provider, model: d.config.model } : null);
+      setProviders(d.providers || []);
+    }).catch(() => {});
+  }, []);
+
+  // Load models when provider changes
+  useEffect(() => {
+    if (!modelOpen || !cfg?.provider) return;
+    setModelsLoading(true);
+    fetch(`/api/config/models?provider=${cfg.provider}`).then(r => r.json()).then(d => {
+      setModels(d.models || []);
+      setModelsLoading(false);
+    }).catch(() => setModelsLoading(false));
+  }, [modelOpen, cfg?.provider]);
+
+  // Close model dropdown on outside click
+  useEffect(() => {
+    if (!modelOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [modelOpen]);
+
+  async function selectModel(provider: string, model: string) {
+    setModelOpen(false);
+    try {
+      const r = await fetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, model }),
+      });
+      const res = await r.json();
+      if (res.success) setCfg({ provider, model });
+    } catch {}
+  }
 
   const activeConv = convs.find(c => c.id === activeId);
   const msgs = activeConv?.messages || [];
@@ -365,6 +420,48 @@ export default function Home() {
               <button onClick={() => delConv(c.id)} style={s.convDel} title="excluir"><Trash2 size={12} /></button>
             </div>
           ))}
+        </div>
+
+        <div ref={modelRef} style={{ position: 'relative' as const }}>
+          <button onClick={() => setModelOpen(!modelOpen)} style={s.modelBtn}>
+            <Settings size={12} />
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+              {cfg ? `${cfg.provider} / ${cfg.model}` : 'configurar modelo'}
+            </span>
+            <ChevronDown size={12} style={{ transform: modelOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+          </button>
+          {modelOpen && (
+            <div style={s.modelDropdown}>
+              {providers.map(p => (
+                <div key={p.id}>
+                  <div style={s.modelProvider}>{p.name}</div>
+                  {modelsLoading && p.id === cfg?.provider && (
+                    <div style={{ padding: '4px 10px', fontSize: '0.65rem', color: D }}>carregando...</div>
+                  )}
+                  {!modelsLoading && p.id === cfg?.provider && models.map(m => (
+                    <button
+                      key={m}
+                      onClick={() => selectModel(p.id, m)}
+                      onMouseEnter={() => setHoveredModel(models.indexOf(m))}
+                      onMouseLeave={() => setHoveredModel(-1)}
+                      style={s.modelItem(m === cfg?.model, models.indexOf(m) === hoveredModel)}
+                    >
+                      {m === cfg?.model && <Check size={11} />}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{m}</span>
+                    </button>
+                  ))}
+                  {!modelsLoading && p.id !== cfg?.provider && (
+                    <button
+                      onClick={() => selectModel(p.id, p.id === 'auto' ? 'auto' : '')}
+                      style={s.modelItem(false, false)}
+                    >
+                      <span style={{ opacity: 0.5 }}>ativar</span>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div style={s.sbFooter}>

@@ -1,4 +1,4 @@
-export { runEngine } from './engine';
+export { runEngine, looksLikeDeferredIntent } from './engine';
 export type { EngineRunOptions, PermissionPromptDecision } from './engine';
 export { defaultHarness } from './harness';
 export type { AgentHarness } from './harness';

@@ -486,6 +486,7 @@ export function App({
           history,
           images,
           sessionId,
+          repoPath: process.cwd(),
           permissionMode: cfgRef.current.permissionMode,
           signal: controller.signal,
           onPermissionRequest: requestPermission,
@@ -520,6 +521,7 @@ export function App({
                     { type: 'assistant', id: nextId(), text: narration, tools: [] },
                   ]);
                 }
+                // New tool round — clear live reply; keep thought history for the turn.
                 fullText = '';
                 cleanedText = '';
                 setLiveText('');
@@ -600,6 +602,15 @@ export function App({
                 fullText += `\n[error: ${event.message}]`;
                 cleanedText = stripToolMarkup(fullText);
                 setLiveText(cleanedText);
+                setStaticItems((prev) => [
+                  ...prev,
+                  {
+                    type: 'system',
+                    id: nextId(),
+                    text: `! ${event.message}`,
+                    variant: 'warn',
+                  },
+                ]);
                 break;
               }
             }

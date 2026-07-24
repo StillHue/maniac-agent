@@ -9,8 +9,8 @@ const MEMORY_DIR = process.env.MANIAC_MEMORY_DIR
 const MEMORY_FILE = path.join(MEMORY_DIR, 'MEMORY.md');
 const USER_FILE = path.join(MEMORY_DIR, 'USER.md');
 
-const MEMORY_CHAR_LIMIT = 2200;
-const USER_CHAR_LIMIT = 1375;
+const MEMORY_CHAR_LIMIT = 8000;
+const USER_CHAR_LIMIT = 4000;
 
 export interface MemorySnapshot {
   memory: string;
@@ -63,9 +63,17 @@ export function saveMemory(content: string): { success: boolean; output: string 
     }
     const newEntry = `\n- ${content.replace(/^[-*]\s*/, '')}`;
     const updated = existing + newEntry;
-    const truncated = updated.length > MEMORY_CHAR_LIMIT
-      ? updated.slice(0, MEMORY_CHAR_LIMIT) + `\n\n> *Memória truncada (limite ${MEMORY_CHAR_LIMIT} chars)*`
-      : updated;
+    let truncated = updated;
+    if (updated.length > MEMORY_CHAR_LIMIT) {
+      // Truncacao inteligente: preserva cabecalho + entradas mais recentes
+      const header = existing.split('\n').slice(0, 3).join('\n') + '\n';
+      const items = updated.split('\n').filter(l => l.startsWith('- '));
+      // Remove as mais antigas ate caber
+      while (items.join('\n').length + header.length > MEMORY_CHAR_LIMIT && items.length > 1) {
+        items.shift();
+      }
+      truncated = header + items.join('\n') + `\n\n> *Memória truncada (${items.length} entradas, ~${header.length + items.join('\n').length} chars)*\n`;
+    }
     atomicWrite(MEMORY_FILE, truncated);
     return { success: true, output: `Memória salva (${content.length} chars, total ${truncated.length}/${MEMORY_CHAR_LIMIT})` };
   } catch (e: any) {
@@ -82,9 +90,15 @@ export function saveUserProfile(content: string): { success: boolean; output: st
     }
     const newEntry = `\n- ${content.replace(/^[-*]\s*/, '')}`;
     const updated = existing + newEntry;
-    const truncated = updated.length > USER_CHAR_LIMIT
-      ? updated.slice(0, USER_CHAR_LIMIT) + `\n\n> *Perfil truncado (limite ${USER_CHAR_LIMIT} chars)*`
-      : updated;
+    let truncated = updated;
+    if (updated.length > USER_CHAR_LIMIT) {
+      const header = existing.split('\n').slice(0, 3).join('\n') + '\n';
+      const items = updated.split('\n').filter(l => l.startsWith('- '));
+      while (items.join('\n').length + header.length > USER_CHAR_LIMIT && items.length > 1) {
+        items.shift();
+      }
+      truncated = header + items.join('\n') + `\n\n> *Perfil truncado (${items.length} entradas)*\n`;
+    }
     atomicWrite(USER_FILE, truncated);
     return { success: true, output: `Perfil salvo (${content.length} chars, total ${truncated.length}/${USER_CHAR_LIMIT})` };
   } catch (e: any) {
