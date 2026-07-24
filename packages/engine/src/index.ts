@@ -32,6 +32,14 @@ export * from './tool-catalog';
 export { describeImage, describeImages, buildVisionAugmentedMessage, isImagePath, visionAvailable, getVisionModelLabel, IMAGE_EXTENSIONS } from './vision';
 export type { ImageDescription } from './vision';
 export {
+  speakText,
+  synthesizeSpeech,
+  stripForSpeech,
+  voiceAvailable,
+  getElevenLabsApiKey,
+  DEFAULT_ELEVEN_VOICE_ID,
+} from './voice';
+export {
   parseProviderIntent,
   applyProviderSwitch,
   hydrateProviderCall,

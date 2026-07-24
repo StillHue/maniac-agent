@@ -12,6 +12,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'default | acceptEdits | plan | dontAsk | bypassPermissions',
   },
   { name: 'model', description: 'configure provider and model' },
+  {
+    name: 'voice',
+    args: 'on|off|toggle|status',
+    description: 'speak replies via ElevenLabs TTS',
+  },
   { name: 'update', description: 'check npm for a newer maniac-agent and install' },
   { name: 'clear', description: 'clear conversation / new session' },
   { name: 'new', description: 'alias for /clear' },

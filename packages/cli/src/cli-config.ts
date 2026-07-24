@@ -11,10 +11,14 @@ export const HISTORY_FILE = path.join(os.homedir(), '.maniac-cli-history');
 export interface CliConfig {
   mode: EngineMode;
   permissionMode: PermissionMode;
+  /** Speak assistant replies via ElevenLabs when key is configured. */
+  voiceEnabled?: boolean;
+  /** Optional ElevenLabs voice id (defaults to Rachel / env). */
+  voiceId?: string;
 }
 
 export function defaultConfig(): CliConfig {
-  return { mode: 'chat', permissionMode: 'default' };
+  return { mode: 'chat', permissionMode: 'default', voiceEnabled: false };
 }
 
 export function loadCliConfig(): CliConfig {

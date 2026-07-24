@@ -15,10 +15,18 @@ try {
   const os = require('os') as typeof import('os');
   const dotenv = require('dotenv') as { config: (opts: { path: string }) => void };
   // Prefer ~/.maniac/.env so a project cwd .env cannot shadow maniac secrets.
+  // When installed globally (Cursor extension), process.cwd() may point to the
+  // npm install dir — only consider it if it actually contains a package.json.
   const candidates = [
     path.join(os.homedir(), '.maniac', '.env'),
-    path.join(process.cwd(), '.env'),
   ];
+  const cwd = process.cwd();
+  // Only add cwd/.env if cwd looks like a real project (has package.json)
+  // or if we're not in the global npm install dir.
+  const npmGlobal = path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'node_modules');
+  if (!cwd.startsWith(npmGlobal) || fs.existsSync(path.join(cwd, 'package.json'))) {
+    candidates.push(path.join(cwd, '.env'));
+  }
   for (const p of candidates) {
     if (fs.existsSync(p)) {
       dotenv.config({ path: p });

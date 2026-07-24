@@ -19,6 +19,8 @@ import {
   runSentinelReview,
   parseSentinelArg,
   SENTINEL_MODEL,
+  speakText,
+  voiceAvailable,
   type PermissionMode,
   type PermissionPromptDecision,
   type QueueEntry,
@@ -658,6 +660,22 @@ export function App({
         });
       }
       clearLive();
+      if (cfgRef.current.voiceEnabled && fullText.trim()) {
+        const voiceId = cfgRef.current.voiceId;
+        void speakText(fullText, voiceId ? { voiceId } : undefined).then((r) => {
+          if (!r.ok) {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: `! voice: ${r.error || 'failed'}`,
+                variant: 'warn',
+              },
+            ]);
+          }
+        });
+      }
     },
     [requestPermission, sessionId, sealPendingAssistant],
   );
@@ -973,6 +991,64 @@ export function App({
         case 'model':
           setShowModelWizard(true);
           break;
+
+        case 'voice': {
+          const a = (arg || 'toggle').toLowerCase();
+          let next = !!cfgRef.current.voiceEnabled;
+          if (a === 'on' || a === 'enable' || a === '1') next = true;
+          else if (a === 'off' || a === 'disable' || a === '0') next = false;
+          else if (a === 'toggle' || a === '') next = !next;
+          else if (a === 'status' || a === 'st') {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: `voice ${cfgRef.current.voiceEnabled ? 'on' : 'off'} · key ${
+                  voiceAvailable() ? 'ok' : 'missing (ELEVENLABS_API_KEY in ~/.maniac/.env)'
+                }`,
+                variant: 'info',
+              },
+            ]);
+            break;
+          } else {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: 'usage: /voice on|off|toggle|status',
+                variant: 'error',
+              },
+            ]);
+            break;
+          }
+          if (next && !voiceAvailable()) {
+            setStaticItems((prev) => [
+              ...prev,
+              {
+                type: 'system',
+                id: nextId(),
+                text: '✗ ELEVENLABS_API_KEY missing — set it in ~/.maniac/.env',
+                variant: 'error',
+              },
+            ]);
+            break;
+          }
+          const newCfg = { ...cfgRef.current, voiceEnabled: next };
+          setCfg(newCfg);
+          saveCliConfig(newCfg);
+          setStaticItems((prev) => [
+            ...prev,
+            {
+              type: 'system',
+              id: nextId(),
+              text: next ? '✓ voice on — replies will be spoken (ElevenLabs)' : '✓ voice off',
+              variant: 'success',
+            },
+          ]);
+          break;
+        }
 
         case 'update':
           if (runningRef.current || isLoading || permPromptRef.current) {
@@ -1638,6 +1714,7 @@ export function App({
         activeModel={activeModel}
         queueSize={queueEntries.length}
         sessionId={sessionId}
+        voiceEnabled={!!cfg.voiceEnabled}
       />
       {/* Keep ≥2 blank rows so Windows fullscreen frames never hit exact
           terminal height — that path scrolls one row per repaint and stamps UI. */}

@@ -20,6 +20,7 @@ export function Footer({
   activeModel,
   queueSize,
   sessionId,
+  voiceEnabled,
 }: {
   git: GitInfo;
   tokens: number;
@@ -36,6 +37,7 @@ export function Footer({
   activeModel: string;
   queueSize: number;
   sessionId?: string;
+  voiceEnabled?: boolean;
 }) {
   const pct = Math.round(Math.min(1, tokens / maxTokens) * 100);
   const leftParts = [
@@ -43,6 +45,7 @@ export function Footer({
     `${pct}% ctx`,
     mode,
     permissionMode === 'default' ? null : permissionMode,
+    voiceEnabled ? 'voice' : null,
     queueSize > 0 ? `q:${queueSize}` : null,
   ].filter(Boolean);
   const leftStatus = leftParts.join('  ·  ');
